@@ -42,11 +42,35 @@ export const orchestratorIn = z.object({
 });
 export type OrchestratorInput = z.infer<typeof orchestratorIn>;
 
+export const ALLOWED_YOUTUBE_HOSTS = new Set([
+  'youtube.com',
+  'www.youtube.com',
+  'm.youtube.com',
+  'youtu.be',
+]);
+
+export function isValidYoutubeUrl(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl.trim());
+    return (
+      parsed.protocol === 'https:' &&
+      ALLOWED_YOUTUBE_HOSTS.has(parsed.hostname.toLowerCase())
+    );
+  } catch {
+    return false;
+  }
+}
+
+export const MediaImagePayloadSchema = z.object({
+  mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+  data: z.string().min(1).max(1_500_000),
+});
+
 export const researcherIn = z.object({
   targetPlatform: PlatformSchema,
   topic: z.string().max(MAX_PASTE_CHARS).optional(),
   profile: ChannelProfileSchema,
-  existingIdeas: z.array(z.string()).optional(),
+  existingIdeas: z.array(z.string().max(300)).max(50).optional(),
 });
 export type ResearcherInput = z.infer<typeof researcherIn>;
 
@@ -56,10 +80,10 @@ export const scriptwriterIn = z.object({
   researchResult: researcherOut.optional(),
   styleHints: z
     .object({
-      rhythmPattern: z.string().optional(),
+      rhythmPattern: z.string().max(2000).optional(),
       avgShotSec: z.number().nullable().optional(),
       cutsPerMin: z.number().nullable().optional(),
-      hookVisual: z.string().optional(),
+      hookVisual: z.string().max(2000).optional(),
     })
     .optional(),
   revisionFeedback: RevisionFeedbackSchema.optional(),
@@ -77,9 +101,9 @@ export type VisualInput = z.infer<typeof visualIn>;
 export const packagingIn = z.object({
   topic: z.string().min(1).max(MAX_PASTE_CHARS),
   scriptSummary: z.string().max(MAX_PASTE_CHARS),
-  hooks: z.array(z.string()).min(1),
+  hooks: z.array(z.string().max(1000)).min(1).max(20),
   targetPlatform: PlatformSchema,
-  thumbnailStylePattern: z.string().optional(),
+  thumbnailStylePattern: z.string().max(2000).optional(),
   revisionFeedback: RevisionFeedbackSchema.optional(),
 });
 export type PackagingInput = z.infer<typeof packagingIn>;
@@ -90,23 +114,23 @@ export const complianceIn = z.object({
   script: scriptwriterOut,
   visual: visualOut,
   packaging: packagingOut,
-  activeStyleReferenceIds: z.array(z.string()).optional(),
+  activeStyleReferenceIds: z.array(z.string().max(200)).max(20).optional(),
   styleSummary: z.record(z.string(), z.unknown()).optional(),
   recentVideos: z.array(RecentVideoSchema).max(MAX_RECENT_VIDEOS).optional(),
 });
 export type ComplianceInput = z.infer<typeof complianceIn>;
 
 export const AuditVideoItemSchema = z.object({
-  title: z.string().min(1),
+  title: z.string().min(1).max(500),
   summary: z.string().max(MAX_PASTE_CHARS),
   platform: PlatformSchema,
-  date: z.string(),
+  date: z.string().max(32),
 });
 export type AuditVideoItem = z.infer<typeof AuditVideoItemSchema>;
 
 export const auditIn = z.object({
   videos: z.array(AuditVideoItemSchema).min(1).max(MAX_AUDIT_VIDEOS),
-  activeStyleReferenceIds: z.array(z.string()).optional(),
+  activeStyleReferenceIds: z.array(z.string().max(200)).max(20).optional(),
 });
 export type AuditInput = z.infer<typeof auditIn>;
 
@@ -120,34 +144,28 @@ export type AnalystInput = z.infer<typeof analystIn>;
 export const LocalMetricsInputSchema = z.object({
   estimatedCutsPerMin: z.number().nullable(),
   avgShotSec: z.number().nullable(),
-  dominantColors: z.array(z.string()),
+  dominantColors: z.array(z.string().max(64)).max(20),
   sampledDurationSec: z.number().min(0),
   denseFrameCount: z.number().int().min(0),
 });
 
 export const styleAnalystIn = z.object({
-  referenceId: z.string().min(1),
+  referenceId: z.string().min(1).max(120),
   referenceType: StyleReferenceTypeSchema,
-  youtubeUrl: z.string().url().optional(),
+  youtubeUrl: z
+    .string()
+    .max(500)
+    .refine(isValidYoutubeUrl, {
+      message:
+        'URL YouTube harus berawalan https:// dengan host youtube.com, www.youtube.com, m.youtube.com, atau youtu.be.',
+    })
+    .optional(),
   descriptionText: z.string().max(MAX_PASTE_CHARS).optional(),
   note: z.string().max(1000).optional(),
   localMetrics: LocalMetricsInputSchema.optional(),
-  framesBase64: z
-    .array(
-      z.object({
-        mimeType: z.string(),
-        data: z.string(),
-      })
-    )
-    .max(12)
-    .optional(),
+  framesBase64: z.array(MediaImagePayloadSchema).max(12).optional(),
   imagesBase64: z
-    .array(
-      z.object({
-        mimeType: z.string(),
-        data: z.string(),
-      })
-    )
+    .array(MediaImagePayloadSchema)
     .min(MAX_IMAGES_MIN)
     .max(MAX_IMAGES_MAX)
     .optional(),
@@ -176,7 +194,7 @@ export const SAMPLE_PROFILE_FOR_TEST = {
   },
   language: 'Indonesia',
   tone: 'Santai-informatif',
-  platforms: ['youtube_shorts' as const, 'tiktok' as const],
+  platform: 'youtube_shorts' as const,
   postingFrequency: '2-3x/minggu',
   targetDuration: '30-60 detik',
   voiceType: 'Narasi AI (TTS)',

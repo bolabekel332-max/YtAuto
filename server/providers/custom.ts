@@ -1,5 +1,13 @@
 import { CUSTOM_PROVIDER_BASE_URL, getEnv } from '../config';
-import { ProviderCallError, type LLMProvider, type LLMRequest, type LLMResponse } from './types';
+import {
+  combineAbortSignals,
+  parseRetryAfterMs,
+  ProviderCallError,
+  sanitizeErrorMessage,
+  type LLMProvider,
+  type LLMRequest,
+  type LLMResponse,
+} from './types';
 
 interface OpenAICompatibleResponse {
   choices?: Array<{
@@ -89,8 +97,14 @@ export const customProvider: LLMProvider = {
       payload.response_format = { type: 'json_object' };
     }
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), req.timeoutMs);
+    if (req.signal?.aborted) {
+      throw new ProviderCallError('timeout', 499, 'Permintaan ke provider kustom dibatalkan.', false, {
+        errorKind: 'local_timeout',
+        errorName: 'AbortError',
+      });
+    }
+
+    const { signal, cleanup, isCallerAborted } = combineAbortSignals(req.signal, req.timeoutMs);
 
     try {
       const res = await fetch(endpoint, {
@@ -100,15 +114,40 @@ export const customProvider: LLMProvider = {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(payload),
-        signal: controller.signal,
+        signal,
       });
+
+      if (res.status === 401) {
+        throw new ProviderCallError(
+          'provider_error',
+          502,
+          'Autentikasi provider kustom gagal (401).',
+          false,
+          { errorKind: 'authentication_error', upstreamStatus: 401 }
+        );
+      }
+
+      if (res.status === 403) {
+        throw new ProviderCallError(
+          'provider_error',
+          502,
+          'Izin akses provider kustom ditolak (403).',
+          false,
+          { errorKind: 'permission_error', upstreamStatus: 403 }
+        );
+      }
 
       if (res.status === 429) {
         throw new ProviderCallError(
           'provider_error',
           429,
           'Provider kustom mengembalikan HTTP 429.',
-          true
+          true,
+          {
+            errorKind: 'rate_limit',
+            upstreamStatus: 429,
+            retryAfterMs: parseRetryAfterMs(res.headers.get('retry-after')),
+          }
         );
       }
 
@@ -117,7 +156,8 @@ export const customProvider: LLMProvider = {
           'provider_error',
           502,
           `Provider kustom mengembalikan error server HTTP ${res.status}.`,
-          true
+          true,
+          { errorKind: 'upstream_internal_error', upstreamStatus: res.status }
         );
       }
 
@@ -126,7 +166,7 @@ export const customProvider: LLMProvider = {
         throw new ProviderCallError(
           'provider_error',
           502,
-          `Provider kustom error (${res.status}): ${data.error?.message || 'Permintaan gagal.'}`,
+          `Provider kustom error (${res.status}): ${sanitizeErrorMessage(data.error?.message || 'Permintaan gagal.')}`,
           false
         );
       }
@@ -139,6 +179,12 @@ export const customProvider: LLMProvider = {
       };
     } catch (err) {
       if (err instanceof ProviderCallError) throw err;
+      if (isCallerAborted()) {
+        throw new ProviderCallError('timeout', 499, 'Permintaan ke provider kustom dibatalkan.', false, {
+          errorKind: 'local_timeout',
+          errorName: 'AbortError',
+        });
+      }
       if (err instanceof Error && err.name === 'AbortError') {
         throw new ProviderCallError(
           'timeout',
@@ -150,11 +196,11 @@ export const customProvider: LLMProvider = {
       throw new ProviderCallError(
         'provider_error',
         502,
-        `Gagal menghubungi provider kustom: ${err instanceof Error ? err.message : String(err)}`,
+        `Gagal menghubungi provider kustom: ${sanitizeErrorMessage(err)}`,
         false
       );
     } finally {
-      clearTimeout(timer);
+      cleanup();
     }
   },
 

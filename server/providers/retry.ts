@@ -1,8 +1,31 @@
 import { MAX_FALLBACKS } from '../../shared/constants';
 import { ProviderCallError, type LLMProvider, type LLMRequest, type LLMResponse } from './types';
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(
+      new ProviderCallError('timeout', 499, 'Permintaan dibatalkan.', false, {
+        errorKind: 'local_timeout',
+        errorName: 'AbortError',
+      })
+    );
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(
+        new ProviderCallError('timeout', 499, 'Permintaan dibatalkan.', false, {
+          errorKind: 'local_timeout',
+          errorName: 'AbortError',
+        })
+      );
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 export interface RetryAttemptResult {
@@ -12,9 +35,9 @@ export interface RetryAttemptResult {
 
 /**
  * Aturan retry dan fallback (BP 9.4 / NFR-02):
- * 1. Error 429 atau 5xx (retryable): retry dengan jeda maksimal 2x per model.
+ * 1. Error 429 atau 5xx (retryable): retry dengan jeda + jitter maks 2x per model.
  * 2. Jika masih gagal, pindah ke model cadangan (fallbackModels) pada provider yang sama (maks 3).
- * 3. Output terpotong (truncated): TIDAK di-retry otomatis; langsung lempar output_truncated.
+ * 3. Auth/permission error, output_truncated, capability_missing, atau abort: TIDAK di-retry maupun pindah fallback.
  * 4. Setiap panggilan model aktual memanggil beforeModelCall() (consumeModelCall).
  */
 export async function withRetryAndFallback(
@@ -32,9 +55,24 @@ export async function withRetryAndFallback(
 
   for (const model of modelsToTry) {
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (req.signal?.aborted) {
+        throw new ProviderCallError('timeout', 499, 'Permintaan dibatalkan.', false, {
+          errorKind: 'local_timeout',
+          errorName: 'AbortError',
+        });
+      }
+
       if (attempt > 0) {
-        const delayMs = attempt === 1 ? 450 : 1100;
-        await sleep(delayMs);
+        const baseDelay = attempt === 1 ? 450 : 1100;
+        const jitterMs = Math.floor(Math.random() * 250);
+        const retryAfterMs =
+          lastError instanceof ProviderCallError &&
+          typeof lastError.meta?.retryAfterMs === 'number' &&
+          Number.isFinite(lastError.meta.retryAfterMs)
+            ? Math.min(10_000, Math.max(0, lastError.meta.retryAfterMs))
+            : 0;
+        const delayMs = Math.max(baseDelay + jitterMs, retryAfterMs);
+        await sleep(delayMs, req.signal);
       }
 
       try {
@@ -51,9 +89,21 @@ export async function withRetryAndFallback(
         return { response, modelUsed: model };
       } catch (err) {
         lastError = err;
+        if (req.signal?.aborted) {
+          if (err instanceof ProviderCallError) throw err;
+          throw new ProviderCallError('timeout', 499, 'Permintaan dibatalkan.', false, {
+            errorKind: 'local_timeout',
+            errorName: 'AbortError',
+          });
+        }
         if (err instanceof ProviderCallError) {
-          // Jangan retry output_truncated, capability_missing, atau timeout berulang
-          if (err.code === 'output_truncated' || err.code === 'capability_missing') {
+          // Hentikan langsung pada error yang tidak dapat diselesaikan dengan fallback model
+          if (
+            err.code === 'output_truncated' ||
+            err.code === 'capability_missing' ||
+            err.meta?.errorKind === 'authentication_error' ||
+            err.meta?.errorKind === 'permission_error'
+          ) {
             throw err;
           }
           if (!err.retryable) {

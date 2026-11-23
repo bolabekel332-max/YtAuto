@@ -101,6 +101,13 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col lg:flex-row">
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded-lg focus:bg-sky-500 focus:px-3 focus:py-2 focus:text-xs focus:font-semibold focus:text-slate-950"
+      >
+        Lompat ke konten
+      </a>
+
       {/* Mobile Header Bar */}
       <div className="flex items-center justify-between border-b border-slate-800 bg-slate-950 px-4 py-3 lg:hidden">
         <span className="font-display text-base font-bold tracking-tight text-slate-100">
@@ -109,8 +116,10 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
         <button
           type="button"
           onClick={() => setMobileMenuOpen((v) => !v)}
+          aria-expanded={mobileMenuOpen}
+          aria-controls="main-nav-sidebar"
           aria-label={mobileMenuOpen ? 'Tutup menu navigasi' : 'Buka menu navigasi'}
-          className="rounded-lg border border-slate-800 bg-slate-900 p-2 text-slate-200"
+          className="rounded-lg border border-slate-800 bg-slate-900 p-2 text-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
         >
           {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </button>
@@ -118,6 +127,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
 
       {/* Sidebar Navigasi */}
       <aside
+        id="main-nav-sidebar"
         aria-label="Navigasi utama"
         className={`${
           mobileMenuOpen ? 'block' : 'hidden'
@@ -171,21 +181,22 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
             </p>
           )}
         </div>
+
+        <details className="mt-3 rounded-lg border border-slate-800/80 bg-slate-900/40 p-3 text-xs text-slate-400">
+          <summary className="cursor-pointer font-medium text-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 rounded">
+            Privasi &amp; Data
+          </summary>
+          <p className="mt-2 leading-relaxed text-[11px] text-slate-400">
+            Kunci API dan token OAuth disimpan hanya di server dan tidak dikirim ke browser. Profil channel, pengaturan model, dan riwayat run disimpan di browser (<code className="text-slate-300">localStorage</code>). Video mentah tetap di browser; hanya frame ringkas atau metrik terstruktur yang dikirim ke server saat Anda menjalankan analisis.
+          </p>
+        </details>
       </aside>
 
       {/* Main Content Area */}
       <div className="flex min-w-0 flex-1 flex-col">
         <Header title={activeNav.label} subtitle={activeNav.subtitle} />
 
-        <main className="flex-1 p-4 sm:p-6 space-y-4 max-w-[1280px] w-full mx-auto">
-          {state.session.authChecked && !state.session.gateEnabled && (
-            <Banner
-              tone="danger"
-              title="Peringatan Keamanan: Gerbang Akses Tidak Aktif (APP_ACCESS_CODE Kosong)"
-              message="Aplikasi saat ini dapat diakses tanpa kode akses. Jika aplikasi dibagikan atau di-deploy, siapa pun dapat memanggil model memakai kunci API pemilik. Atur APP_ACCESS_CODE minimal 16 karakter di panel Secrets server."
-            />
-          )}
-
+        <main id="main" tabIndex={-1} className="flex-1 p-4 sm:p-6 space-y-4 max-w-[1280px] w-full mx-auto focus:outline-none">
           {!state.profileConfigured && state.currentScreen !== 'setup' && (
             <Banner
               tone="info"

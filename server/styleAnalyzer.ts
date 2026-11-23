@@ -12,7 +12,10 @@ import { AppApiError } from './validation';
  * - Gambar unggahan (3-8 gambar)
  * - Deskripsi manual
  */
-export async function analyzeReference(req: StyleAnalyzeRequest): Promise<StyleAnalyzeResponse> {
+export async function analyzeReference(
+  req: StyleAnalyzeRequest,
+  options: { signal?: AbortSignal } = {}
+): Promise<StyleAnalyzeResponse> {
   const ref = req.reference;
   const media: LLMMediaItem[] = [];
 
@@ -89,7 +92,7 @@ export async function analyzeReference(req: StyleAnalyzeRequest): Promise<StyleA
         agentId: 'style_analyst',
       },
     },
-    { media }
+    { media, signal: options.signal }
   );
 
   const parsedOut = agentResult.output as StyleAnalystOutput;

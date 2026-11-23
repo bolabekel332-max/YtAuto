@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Calculator, Clapperboard, Loader2, Play, ShieldAlert } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Calculator, Clapperboard, Loader2, Play, ShieldAlert, XCircle } from 'lucide-react';
 import { PIPELINE_STEP_IDS } from '../../../shared/constants';
 import type {
   PipelineRun,
@@ -30,14 +30,21 @@ import { AgentOutput } from '../renderers/AgentOutput';
 export const VideoStudio: React.FC = () => {
   const { state, dispatch } = useStore();
 
+  const isRefVisualActive =
+    state.profile.visualStyle.mode === 'reference' ||
+    (state.profile.visualStyle.mode === 'template' &&
+      state.profile.visualStyle.template === 'Berdasarkan referensi kreator');
+
   const defaultStyleId =
-    state.profile.visualStyle.mode === 'reference'
-      ? state.profile.visualStyle.defaultStyleProfileId ?? ''
+    isRefVisualActive &&
+    state.profile.visualStyle.defaultStyleProfileId &&
+    state.styleProfiles.some((sp) => sp.id === state.profile.visualStyle.defaultStyleProfileId)
+      ? state.profile.visualStyle.defaultStyleProfileId
       : '';
 
   const [topic, setTopic] = useState(state.draftRunInput?.topic ?? '');
   const [targetPlatform, setTargetPlatform] = useState<Platform>(
-    state.draftRunInput?.targetPlatform ?? state.profile.platforms[0] ?? 'youtube_shorts'
+    state.draftRunInput?.targetPlatform ?? state.profile.platform ?? 'youtube_shorts'
   );
   const [includeResearch, setIncludeResearch] = useState<boolean>(
     state.draftRunInput?.includeResearch ?? false
@@ -49,6 +56,13 @@ export const VideoStudio: React.FC = () => {
   const [selectedStep, setSelectedStep] = useState<PipelineStepId>('scriptwriter');
   const [isBusy, setIsBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   // Sinkronkan draft input jika datang dari halaman Ide atau tombol Duplikasi
   useEffect(() => {
@@ -56,10 +70,26 @@ export const VideoStudio: React.FC = () => {
       setTopic(state.draftRunInput.topic);
       setTargetPlatform(state.draftRunInput.targetPlatform);
       setIncludeResearch(state.draftRunInput.includeResearch);
-      setStyleProfileId(state.draftRunInput.styleProfileId ?? defaultStyleId);
+      const draftStyleId = state.draftRunInput.styleProfileId;
+      const validDraftStyleId =
+        draftStyleId && state.styleProfiles.some((sp) => sp.id === draftStyleId)
+          ? draftStyleId
+          : defaultStyleId;
+      setStyleProfileId(validDraftStyleId);
       dispatch({ type: 'SET_DRAFT_RUN_INPUT', input: null });
     }
-  }, [state.draftRunInput, defaultStyleId, dispatch]);
+  }, [state.draftRunInput, defaultStyleId, state.styleProfiles, dispatch]);
+
+  const effectiveStyleProfileId =
+    styleProfileId && state.styleProfiles.some((sp) => sp.id === styleProfileId)
+      ? styleProfileId
+      : '';
+
+  useEffect(() => {
+    if (styleProfileId && effectiveStyleProfileId !== styleProfileId) {
+      setStyleProfileId('');
+    }
+  }, [styleProfileId, effectiveStyleProfileId]);
 
   const callEst = useMemo(
     () => estimateCalls({ includeResearch }, state.modelConfigs),
@@ -80,13 +110,13 @@ export const VideoStudio: React.FC = () => {
     }
   }, [activeRun, selectedStep]);
 
-  const makePipelineCtx = () => ({
+  const makePipelineCtx = (signal?: AbortSignal) => ({
     profile: state.profile,
     styleProfiles: state.styleProfiles,
     modelConfigs: state.modelConfigs,
     knowledge: state.knowledge,
     history: state.history,
-    accessCode: state.session.accessCode,
+    signal,
     onRunUpdate: (run: PipelineRun) => {
       dispatch({ type: 'SET_ACTIVE_RUN', run });
     },
@@ -94,6 +124,10 @@ export const VideoStudio: React.FC = () => {
       dispatch({ type: 'UPSERT_HISTORY', entry });
     },
   });
+
+  const handleCancelPipeline = () => {
+    abortRef.current?.abort();
+  };
 
   const handleStartPipeline = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -112,18 +146,23 @@ export const VideoStudio: React.FC = () => {
       topic: topic.trim(),
       targetPlatform,
       includeResearch,
-      styleProfileId: styleProfileId || undefined,
+      styleProfileId: effectiveStyleProfileId || undefined,
     };
 
+    const controller = new AbortController();
+    abortRef.current = controller;
     setIsBusy(true);
     setSelectedStep(includeResearch ? 'researcher' : 'scriptwriter');
     try {
-      await runPipeline(input, makePipelineCtx());
+      await runPipeline(input, makePipelineCtx(controller.signal));
     } catch (err) {
-      setFormError(
-        err instanceof Error ? err.message : 'Gagal memulai pipeline Studio Video.'
-      );
+      if (!(err instanceof DOMException && err.name === 'AbortError')) {
+        setFormError(
+          err instanceof Error ? err.message : 'Gagal memulai pipeline Studio Video.'
+        );
+      }
     } finally {
+      abortRef.current = null;
       setIsBusy(false);
     }
   };
@@ -131,12 +170,17 @@ export const VideoStudio: React.FC = () => {
   const handleResume = async () => {
     if (!activeRun || isBusy || isPipelineLocked()) return;
     setFormError(null);
+    const controller = new AbortController();
+    abortRef.current = controller;
     setIsBusy(true);
     try {
-      await resumeRun(activeRun, makePipelineCtx());
+      await resumeRun(activeRun, makePipelineCtx(controller.signal));
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Gagal melanjutkan pipeline.');
+      if (!(err instanceof DOMException && err.name === 'AbortError')) {
+        setFormError(err instanceof Error ? err.message : 'Gagal melanjutkan pipeline.');
+      }
     } finally {
+      abortRef.current = null;
       setIsBusy(false);
     }
   };
@@ -144,13 +188,18 @@ export const VideoStudio: React.FC = () => {
   const handleRetryStep = async (stepId: PipelineStepId) => {
     if (!activeRun || isBusy || isPipelineLocked()) return;
     setFormError(null);
+    const controller = new AbortController();
+    abortRef.current = controller;
     setIsBusy(true);
     setSelectedStep(stepId);
     try {
-      await retryStep(activeRun, stepId, makePipelineCtx());
+      await retryStep(activeRun, stepId, makePipelineCtx(controller.signal));
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Gagal mengulangi langkah.');
+      if (!(err instanceof DOMException && err.name === 'AbortError')) {
+        setFormError(err instanceof Error ? err.message : 'Gagal mengulangi langkah.');
+      }
     } finally {
+      abortRef.current = null;
       setIsBusy(false);
     }
   };
@@ -158,12 +207,17 @@ export const VideoStudio: React.FC = () => {
   const handleSkipStep = async (stepId: PipelineStepId) => {
     if (!activeRun || isBusy || isPipelineLocked()) return;
     setFormError(null);
+    const controller = new AbortController();
+    abortRef.current = controller;
     setIsBusy(true);
     try {
-      await skipStep(activeRun, stepId, makePipelineCtx());
+      await skipStep(activeRun, stepId, makePipelineCtx(controller.signal));
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Gagal melewati langkah.');
+      if (!(err instanceof DOMException && err.name === 'AbortError')) {
+        setFormError(err instanceof Error ? err.message : 'Gagal melewati langkah.');
+      }
     } finally {
+      abortRef.current = null;
       setIsBusy(false);
     }
   };
@@ -226,7 +280,7 @@ export const VideoStudio: React.FC = () => {
 
               <SelectField
                 label="Profil Gaya Visual (Opsional)"
-                value={styleProfileId}
+                value={effectiveStyleProfileId}
                 options={[
                   { value: '', label: 'Gunakan Template Setup Channel' },
                   ...state.styleProfiles.map((sp) => ({
@@ -253,24 +307,29 @@ export const VideoStudio: React.FC = () => {
             </label>
 
             {/* Estimasi Panggilan Model Sebelum Start (BP 8.5) */}
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-xs">
-              <div className="flex items-center gap-2 text-slate-300">
-                <Calculator className="h-4 w-4 text-sky-400 shrink-0" aria-hidden="true" />
-                <span>Perkiraan Panggilan Model:</span>
-                <Tooltip
-                  text="Menghitung panggilan standar (termasuk pencarian dua langkah jika aktif) serta skenario terburuk jika Kepatuhan memicu hingga 2 putaran revisi penuh. Tidak termasuk retry jaringan."
-                  label="Panduan Estimasi Panggilan"
-                />
+            <div className="rounded-xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-xs space-y-1.5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-slate-300">
+                  <Calculator className="h-4 w-4 text-sky-400 shrink-0" aria-hidden="true" />
+                  <span>Perkiraan Panggilan Model:</span>
+                  <Tooltip
+                    text="Menghitung panggilan standar (termasuk pencarian dua langkah jika aktif) serta skenario terburuk jika Kepatuhan memicu hingga 2 putaran revisi penuh."
+                    label="Panduan Estimasi Panggilan"
+                  />
+                </div>
+                <div className="flex flex-wrap items-center gap-3 font-mono tabular-nums">
+                  <span className="text-sky-300 font-semibold">
+                    Standar: {callEst.baselineCalls} panggilan
+                  </span>
+                  <span className="text-slate-400">·</span>
+                  <span className="text-amber-300">
+                    Skenario Maks (2 revisi): {callEst.worstCaseCalls} panggilan
+                  </span>
+                </div>
               </div>
-              <div className="flex flex-wrap items-center gap-3 font-mono tabular-nums">
-                <span className="text-sky-300 font-semibold">
-                  Standar: {callEst.baselineCalls} panggilan
-                </span>
-                <span className="text-slate-400">·</span>
-                <span className="text-amber-300">
-                  Skenario Maks (2 revisi): {callEst.worstCaseCalls} panggilan
-                </span>
-              </div>
+              <p className="text-[11px] text-slate-400">
+                Estimasi ini adalah perkiraan panggilan baseline dan skenario revisi; tidak menghitung retry jaringan, fallback model, atau perbaikan JSON.
+              </p>
             </div>
 
             {formError && (
@@ -282,7 +341,17 @@ export const VideoStudio: React.FC = () => {
               </div>
             )}
 
-            <div className="flex justify-end">
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {isBusy && (
+                <button
+                  type="button"
+                  onClick={handleCancelPipeline}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-950/50 px-4 py-2.5 text-xs font-medium text-rose-200 hover:bg-rose-950/80"
+                >
+                  <XCircle className="h-4 w-4" aria-hidden="true" />
+                  <span>Batalkan Pipeline</span>
+                </button>
+              )}
               <button
                 type="submit"
                 disabled={isBusy}
@@ -443,6 +512,7 @@ export const VideoStudio: React.FC = () => {
               setIncludeResearch(entry.input.includeResearch);
               setStyleProfileId(entry.input.styleProfileId ?? '');
             }}
+            onDeleteEntry={(id) => dispatch({ type: 'DELETE_HISTORY', id })}
           />
         </Card>
       </div>

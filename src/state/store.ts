@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useReducer } from 'react';
+import React, { createContext, useContext, useEffect, useReducer, useRef } from 'react';
 import { HISTORY_MAX } from '../../shared/constants';
 import type {
   AgentModelConfig,
@@ -17,7 +17,15 @@ import type {
 import { PROFILE_PRESETS } from '../config/presets';
 import { DEFAULT_KNOWLEDGE } from '../knowledge/blocks';
 import { DEFAULT_MODEL_CONFIGS } from './defaults';
-import { load, save, type PersistedAppData } from './persistence';
+import {
+  clearLocalData,
+  load,
+  mergeKnowledgeBlocks,
+  mergeModelConfigs,
+  save,
+  STORAGE_KEY,
+  type PersistedAppData,
+} from './persistence';
 
 export type ScreenId =
   | 'setup'
@@ -29,18 +37,10 @@ export type ScreenId =
   | 'knowledge'
   | 'models';
 
-export interface SessionState {
-  accessCode: string;
-  gateEnabled: boolean;
-  authRequiredPrompt: boolean;
-  authChecked: boolean;
-}
-
 export interface AppState extends PersistedAppData {
   currentScreen: ScreenId;
   draftRunInput: RunInput | null;
   storageWarning?: string;
-  session: SessionState;
 }
 
 function normalizeInterruptedRun(run: PipelineRun | null | undefined): PipelineRun | null {
@@ -66,6 +66,28 @@ function normalizeInterruptedRun(run: PipelineRun | null | undefined): PipelineR
   };
 }
 
+function buildDefaultState(): AppState {
+  const fallbackProfile = structuredClone(PROFILE_PRESETS[0].profile);
+  return {
+    currentScreen: 'setup',
+    draftRunInput: null,
+    profile: fallbackProfile,
+    profileConfigured: false,
+    styleProfiles: [],
+    styleReferences: [],
+    modelConfigs: structuredClone(DEFAULT_MODEL_CONFIGS),
+    knowledge: structuredClone(DEFAULT_KNOWLEDGE),
+    history: [],
+    activeRun: null,
+    lastIdeas: undefined,
+    lastAudit: undefined,
+    lastAnalysis: undefined,
+    lastExportedAt: undefined,
+    changesSinceExport: 0,
+    storageWarning: undefined,
+  };
+}
+
 function buildInitialState(): AppState {
   const loaded = load();
   const saved = loaded.data;
@@ -78,14 +100,8 @@ function buildInitialState(): AppState {
     profileConfigured: saved?.profileConfigured ?? false,
     styleProfiles: saved?.styleProfiles ?? [],
     styleReferences: saved?.styleReferences ?? [],
-    modelConfigs:
-      saved?.modelConfigs && saved.modelConfigs.length === DEFAULT_MODEL_CONFIGS.length
-        ? saved.modelConfigs
-        : structuredClone(DEFAULT_MODEL_CONFIGS),
-    knowledge:
-      saved?.knowledge && saved.knowledge.length > 0
-        ? saved.knowledge
-        : structuredClone(DEFAULT_KNOWLEDGE),
+    modelConfigs: mergeModelConfigs(saved?.modelConfigs, DEFAULT_MODEL_CONFIGS),
+    knowledge: mergeKnowledgeBlocks(saved?.knowledge, DEFAULT_KNOWLEDGE),
     history: saved?.history ?? [],
     activeRun: normalizeInterruptedRun(saved?.activeRun),
     lastIdeas: saved?.lastIdeas,
@@ -94,12 +110,6 @@ function buildInitialState(): AppState {
     lastExportedAt: saved?.lastExportedAt,
     changesSinceExport: saved?.changesSinceExport ?? 0,
     storageWarning: loaded.warning,
-    session: {
-      accessCode: '',
-      gateEnabled: false,
-      authRequiredPrompt: false,
-      authChecked: false,
-    },
   };
 }
 
@@ -118,14 +128,15 @@ export type AppAction =
   | { type: 'SET_ACTIVE_RUN'; run: PipelineRun | null }
   | { type: 'UPDATE_ACTIVE_RUN_STEP'; stepId: PipelineStepId; state: StepState }
   | { type: 'UPSERT_HISTORY'; entry: HistoryEntry }
+  | { type: 'DELETE_HISTORY'; id: string }
   | { type: 'UPDATE_HISTORY_SELECTION'; id: string; selection: { titleIndex: number; hookIndex: number } }
   | { type: 'SET_LAST_IDEAS'; result: AgentResult }
   | { type: 'SET_LAST_AUDIT'; result: AgentResult }
   | { type: 'SET_LAST_ANALYSIS'; result: AgentResult }
   | { type: 'MARK_EXPORTED'; exportedAt: string }
   | { type: 'IMPORT_ALL'; file: ExportFile }
-  | { type: 'SET_STORAGE_WARNING'; warning?: string }
-  | { type: 'SET_SESSION'; patch: Partial<SessionState> };
+  | { type: 'CLEAR_LOCAL_DATA' }
+  | { type: 'SET_STORAGE_WARNING'; warning?: string };
 
 function reducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
@@ -236,6 +247,14 @@ function reducer(state: AppState, action: AppAction): AppState {
       };
     }
 
+    case 'DELETE_HISTORY':
+      return {
+        ...state,
+        history: state.history.filter((h) => h.id !== action.id),
+        activeRun: state.activeRun?.id === action.id ? null : state.activeRun,
+        changesSinceExport: state.changesSinceExport + 1,
+      };
+
     case 'UPDATE_HISTORY_SELECTION':
       return {
         ...state,
@@ -280,8 +299,8 @@ function reducer(state: AppState, action: AppAction): AppState {
         profileConfigured: true,
         styleProfiles: action.file.styleProfiles,
         styleReferences: action.file.styleReferences,
-        modelConfigs: action.file.modelConfigs,
-        knowledge: action.file.knowledge,
+        modelConfigs: mergeModelConfigs(action.file.modelConfigs, DEFAULT_MODEL_CONFIGS),
+        knowledge: mergeKnowledgeBlocks(action.file.knowledge, DEFAULT_KNOWLEDGE),
         history: action.file.history.slice(0, HISTORY_MAX),
         lastIdeas: action.file.lastIdeas,
         lastAudit: action.file.lastAudit,
@@ -290,14 +309,12 @@ function reducer(state: AppState, action: AppAction): AppState {
         changesSinceExport: 0,
       };
 
+    case 'CLEAR_LOCAL_DATA':
+      clearLocalData();
+      return buildDefaultState();
+
     case 'SET_STORAGE_WARNING':
       return { ...state, storageWarning: action.warning };
-
-    case 'SET_SESSION':
-      return {
-        ...state,
-        session: { ...state.session, ...action.patch },
-      };
 
     default:
       return state;
@@ -313,43 +330,38 @@ const StoreContext = createContext<StoreContextValue | null>(null);
 
 export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [state, dispatch] = useReducer(reducer, undefined, buildInitialState);
+  const snapshotRef = useRef<PersistedAppData>(extractPersistedSnapshot(state));
+  const warningRef = useRef<string | undefined>(state.storageWarning);
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const skipInitialSaveRef = useRef(true);
+
+  snapshotRef.current = extractPersistedSnapshot(state);
+  warningRef.current = state.storageWarning;
 
   useEffect(() => {
-    const {
-      profile,
-      profileConfigured,
-      styleProfiles,
-      styleReferences,
-      modelConfigs,
-      knowledge,
-      history,
-      activeRun,
-      lastIdeas,
-      lastAudit,
-      lastAnalysis,
-      lastExportedAt,
-      changesSinceExport,
-    } = state;
-
-    const result = save({
-      profile,
-      profileConfigured,
-      styleProfiles,
-      styleReferences,
-      modelConfigs,
-      knowledge,
-      history,
-      activeRun,
-      lastIdeas,
-      lastAudit,
-      lastAnalysis,
-      lastExportedAt,
-      changesSinceExport,
-    });
-
-    if (result.warning && result.warning !== state.storageWarning) {
-      dispatch({ type: 'SET_STORAGE_WARNING', warning: result.warning });
+    if (skipInitialSaveRef.current) {
+      skipInitialSaveRef.current = false;
+      return;
     }
+
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+
+    debounceTimerRef.current = setTimeout(() => {
+      debounceTimerRef.current = null;
+      const result = save(snapshotRef.current);
+      if (result.warning && result.warning !== warningRef.current) {
+        dispatch({ type: 'SET_STORAGE_WARNING', warning: result.warning });
+      }
+    }, 500);
+
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+    };
   }, [
     state.profile,
     state.profileConfigured,
@@ -365,6 +377,41 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     state.lastExportedAt,
     state.changesSinceExport,
   ]);
+
+  useEffect(() => {
+    const flushPending = () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+      save(snapshotRef.current);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        flushPending();
+      }
+    };
+
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY) {
+        dispatch({
+          type: 'SET_STORAGE_WARNING',
+          warning: 'Data diubah di tab lain; muat ulang untuk menghindari penimpaan.',
+        });
+      }
+    };
+
+    window.addEventListener('beforeunload', flushPending);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('storage', handleStorage);
+
+    return () => {
+      window.removeEventListener('beforeunload', flushPending);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, []);
 
   return React.createElement(StoreContext.Provider, { value: { state, dispatch } }, children);
 };

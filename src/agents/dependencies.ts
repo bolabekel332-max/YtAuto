@@ -1,19 +1,9 @@
 import type {
   AgentId,
   AgentModelConfig,
-  PipelineStepId,
   RevisableAgentId,
   RunInput,
 } from '../../shared/schemas';
-
-export const DEPENDENCIES: Record<PipelineStepId, PipelineStepId[]> = {
-  researcher: [],
-  scriptwriter: ['visual', 'packaging'],
-  visual: [],
-  packaging: [],
-  compliance: [],
-  orchestrator: [],
-};
 
 /**
  * Mengembalikan daftar agent revisi terdampak sesuai graf dependensi (BP 8.2):
@@ -34,14 +24,6 @@ export function getDownstream(affectedAgents: RevisableAgentId[]): RevisableAgen
 function callsForAgent(agentId: AgentId, modelConfigs: AgentModelConfig[]): number {
   const cfg = modelConfigs.find((c) => c.agentId === agentId);
   if (!cfg) return 1;
-  if (
-    (agentId === 'researcher' || agentId === 'compliance') &&
-    cfg.useSearch &&
-    cfg.searchMode === 'two_step' &&
-    cfg.providerId !== 'mock'
-  ) {
-    return 2;
-  }
   // Sesuai rumus BP 8.5, jika searchMode two_step aktif pada konfigurasi compliance/researcher,
   // tampilkan hitungan two_step (2) agar pengguna mengetahui estimasi dua langkahnya secara konsisten.
   if (

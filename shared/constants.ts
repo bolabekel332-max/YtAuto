@@ -65,4 +65,4 @@ export const MAX_REVISION_ROUNDS = 2;
 export const MAX_RECENT_VIDEOS = 3;
 export const MAX_AUDIT_VIDEOS = 10;
 export const KNOWLEDGE_STALE_DAYS = 30;
-export const ACCESS_CODE_HEADER = 'x-app-access-code';
+export const MODEL_ID_REGEX = /^[A-Za-z0-9._:/-]+$/;

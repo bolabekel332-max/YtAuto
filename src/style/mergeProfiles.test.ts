@@ -53,6 +53,7 @@ test('mergeProfiles menghitung rata-rata berbobot angka dan memilih teks berbobo
   );
 
   assert.equal(merged.name, 'Gabungan AB');
+  assert.deepEqual(merged.weights, { a: 0.75, b: 0.25 });
   // 2.0*0.75 + 4.0*0.25 = 2.5
   assert.equal(merged.attributes.rhythm.value.avgShotSec, 2.5);
   // 30*0.75 + 10*0.25 = 25

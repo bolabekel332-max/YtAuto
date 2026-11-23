@@ -56,6 +56,7 @@ import {
   RECOMMENDED_AGENT_SETTINGS,
 } from '../../state/defaults';
 import { useStore } from '../../state/store';
+import { safeExternalUrl } from '../../utils/safeUrl';
 import { Card } from '../components/Card';
 import { Tooltip } from '../components/Tooltip';
 import { AgentOutput } from '../renderers/AgentOutput';
@@ -113,7 +114,7 @@ export const ModelSettings: React.FC = () => {
     async (pid: 'openrouter' | 'nous', expandAfter = false) => {
       setLoadingCatalog((prev) => ({ ...prev, [pid]: true }));
       try {
-        const res = await getProviderModels(pid, state.session.accessCode);
+        const res = await getProviderModels(pid);
         setProviderCatalogs((prev) => ({ ...prev, [pid]: res }));
         if (expandAfter) {
           setCatalogExpanded((prev) => ({ ...prev, [pid]: true }));
@@ -135,35 +136,40 @@ export const ModelSettings: React.FC = () => {
         setLoadingCatalog((prev) => ({ ...prev, [pid]: false }));
       }
     },
-    [state.session.accessCode]
+    []
   );
 
-  const fetchStatus = useCallback(async () => {
-    setLoadingStatus(true);
-    setStatusError(null);
-    try {
-      const [res, oauthRes] = await Promise.all([
-        getProviderStatus(state.session.accessCode),
-        getNousOAuthStatus(state.session.accessCode).catch(() => null),
-      ]);
-      setStatusData(res);
-      if (oauthRes) setNousOAuth(oauthRes);
+  const fetchStatus = useCallback(
+    async (withCatalogs = false) => {
+      setLoadingStatus(true);
+      setStatusError(null);
+      try {
+        const [res, oauthRes] = await Promise.all([
+          getProviderStatus(),
+          getNousOAuthStatus().catch(() => null),
+        ]);
+        setStatusData(res);
+        if (oauthRes) setNousOAuth(oauthRes);
 
-      const orReady = res.providers.some((p) => p.id === 'openrouter' && p.available);
-      const nousReady = res.providers.some((p) => p.id === 'nous' && p.available);
-      if (orReady) void loadProviderCatalog('openrouter');
-      if (nousReady) void loadProviderCatalog('nous');
-    } catch (err) {
-      setStatusError(
-        err instanceof Error ? err.message : 'Gagal memuat status provider dari server.'
-      );
-    } finally {
-      setLoadingStatus(false);
-    }
-  }, [state.session.accessCode, loadProviderCatalog]);
+        if (withCatalogs) {
+          const orReady = res.providers.some((p) => p.id === 'openrouter' && p.available);
+          const nousReady = res.providers.some((p) => p.id === 'nous' && p.available);
+          if (orReady) void loadProviderCatalog('openrouter');
+          if (nousReady) void loadProviderCatalog('nous');
+        }
+      } catch (err) {
+        setStatusError(
+          err instanceof Error ? err.message : 'Gagal memuat status provider dari server.'
+        );
+      } finally {
+        setLoadingStatus(false);
+      }
+    },
+    [loadProviderCatalog]
+  );
 
   useEffect(() => {
-    void fetchStatus();
+    void fetchStatus(true);
   }, [fetchStatus]);
 
   useEffect(() => {
@@ -176,12 +182,12 @@ export const ModelSettings: React.FC = () => {
       timer = setTimeout(async () => {
         if (cancelled) return;
         try {
-          const res = await pollNousDeviceAuth(nousFlow.flowId, state.session.accessCode);
+          const res = await pollNousDeviceAuth(nousFlow.flowId);
           if (cancelled) return;
           if (res.status === 'connected') {
             setNousFlow(null);
             setNousPollMsg(res.message || 'Akun Nous Portal berhasil terhubung via OAuth.');
-            void fetchStatus();
+            void fetchStatus(true);
             return;
           }
           if (res.status === 'expired' || res.status === 'denied') {
@@ -209,14 +215,14 @@ export const ModelSettings: React.FC = () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [nousFlow, state.session.accessCode, fetchStatus]);
+  }, [nousFlow, fetchStatus]);
 
   const handleStartNousOAuth = async () => {
     setNousStarting(true);
     setNousPollMsg(null);
     setNousCopied(false);
     try {
-      const started = await startNousDeviceAuth(state.session.accessCode);
+      const started = await startNousDeviceAuth();
       setNousFlow(started);
       setNousPollMsg('Buka tautan login Nous Portal dan masukkan/setujui kode di atas.');
     } catch (err) {
@@ -230,7 +236,7 @@ export const ModelSettings: React.FC = () => {
 
   const handleDisconnectNous = async () => {
     try {
-      const next = await disconnectNousOAuth(state.session.accessCode);
+      const next = await disconnectNousOAuth();
       setNousOAuth(next);
       setNousFlow(null);
       setProviderCatalogs((prev) => {
@@ -282,10 +288,7 @@ export const ModelSettings: React.FC = () => {
     const matchingCfg = state.modelConfigs.find((c) => c.providerId === providerId);
     const model = matchingCfg?.model ?? defaultModelForProvider(providerId);
     try {
-      const res = await testProvider(
-        { providerId, model },
-        state.session.accessCode
-      );
+      const res = await testProvider({ providerId, model });
       setProviderTestMsg((prev) => ({
         ...prev,
         [providerId]: `${res.message} (${Math.round(res.latencyMs)} ms)`,
@@ -306,16 +309,13 @@ export const ModelSettings: React.FC = () => {
     setTestingAgentId(cfg.agentId);
     setAgentTestErrors((prev) => ({ ...prev, [cfg.agentId]: undefined }));
     try {
-      const result = await testAgent(
-        {
-          agentId: cfg.agentId,
-          mode: 'default',
-          profile: state.profile,
-          knowledge: state.knowledge,
-          config: cfg,
-        },
-        state.session.accessCode
-      );
+      const result = await testAgent({
+        agentId: cfg.agentId,
+        mode: 'default',
+        profile: state.profile,
+        knowledge: state.knowledge,
+        config: cfg,
+      });
       setAgentTestResults((prev) => ({ ...prev, [cfg.agentId]: result }));
       void fetchStatus();
     } catch (err) {
@@ -385,7 +385,7 @@ export const ModelSettings: React.FC = () => {
             <button
               type="button"
               disabled={loadingStatus}
-              onClick={fetchStatus}
+              onClick={() => void fetchStatus(false)}
               className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800"
             >
               <RefreshCw
@@ -553,15 +553,24 @@ export const ModelSettings: React.FC = () => {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
-                    <a
-                      href={nousFlow.verificationUriComplete}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-sky-400 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-300"
-                    >
-                      <span>Buka Login Nous Portal</span>
-                      <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                    </a>
+                    {(() => {
+                      const safeNousHref = safeExternalUrl(nousFlow.verificationUriComplete);
+                      return safeNousHref ? (
+                        <a
+                          href={safeNousHref}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-sky-400 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-300"
+                        >
+                          <span>Buka Login Nous Portal</span>
+                          <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                        </a>
+                      ) : (
+                        <span className="text-xs text-rose-300">
+                          URL login Nous tidak valid.
+                        </span>
+                      );
+                    })()}
                     <button
                       type="button"
                       onClick={() => {
@@ -773,6 +782,29 @@ export const ModelSettings: React.FC = () => {
           const testErr = agentTestErrors[cfg.agentId];
           const supportsSearch =
             cfg.agentId === 'researcher' || cfg.agentId === 'compliance';
+          const providerInfo = statusData?.providers.find((p) => p.id === cfg.providerId);
+          const agentWarnings: string[] = [];
+          if (providerInfo && !providerInfo.available) {
+            agentWarnings.push(
+              `Provider ${providerInfo.name} belum tersedia di server (${providerInfo.statusNote}). Ubah provider atau lengkapi environment server.`
+            );
+          }
+          if (supportsSearch && cfg.useSearch && providerInfo && !providerInfo.capabilities.search) {
+            agentWarnings.push(
+              `Pencarian Web aktif, tetapi ${providerInfo.name} tidak mendukung pencarian web langsung. Nonaktifkan Pencarian Web atau pilih Gemini / OpenRouter.`
+            );
+          }
+          if (cfg.agentId === 'style_analyst' && providerInfo) {
+            if (!providerInfo.capabilities.image) {
+              agentWarnings.push(
+                `${providerInfo.name} tidak mendukung input Gambar/Frame untuk analisis screenshot atau video lokal. Gunakan Deskripsi Manual atau alihkan ke Gemini / OpenRouter.`
+              );
+            } else if (!providerInfo.capabilities.video) {
+              agentWarnings.push(
+                `${providerInfo.name} mendukung Gambar/Frame, tetapi tidak memproses Link YouTube langsung tanpa catatan teks. Untuk analisis Link YouTube penuh, gunakan Gemini.`
+              );
+            }
+          }
 
           return (
             <Card
@@ -796,6 +828,19 @@ export const ModelSettings: React.FC = () => {
               }
             >
               <div className="space-y-4">
+                {agentWarnings.length > 0 && (
+                  <div
+                    role="alert"
+                    className="flex items-start gap-2.5 rounded-xl border border-amber-500/40 bg-amber-950/40 px-3.5 py-2.5 text-xs text-amber-100"
+                  >
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" />
+                    <ul className="space-y-1 list-disc list-inside">
+                      {agentWarnings.map((w, idx) => (
+                        <li key={idx}>{w}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                   {/* Provider */}
                   <div>

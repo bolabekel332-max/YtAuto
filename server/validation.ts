@@ -14,7 +14,7 @@ import {
   type AgentModelConfig,
 } from '../shared/schemas';
 import type { ApiErrorCode } from '../shared/api';
-import { CUSTOM_PROVIDER_BASE_URL, PROVIDER_ALLOWLIST } from './config';
+import { CUSTOM_PROVIDER_BASE_URL, getEnv, PROVIDER_ALLOWLIST } from './config';
 import type { LLMMediaItem, LLMProvider } from './providers/types';
 
 export class AppApiError extends Error {
@@ -50,6 +50,22 @@ export function validateConfig(
       400,
       `Provider "${config.providerId}" tidak termasuk dalam allowlist server.`
     );
+  }
+
+  if (config.providerId === 'gemini') {
+    const { geminiModelAllowlist } = getEnv();
+    if (geminiModelAllowlist.length > 0) {
+      const modelsToCheck = [config.model, ...config.fallbackModels];
+      for (const m of modelsToCheck) {
+        if (!geminiModelAllowlist.includes(m)) {
+          throw new AppApiError(
+            'invalid_request',
+            400,
+            `Model Gemini "${m}" tidak termasuk dalam GEMINI_MODEL_ALLOWLIST server.`
+          );
+        }
+      }
+    }
   }
 
   if (config.providerId === 'custom' && !CUSTOM_PROVIDER_BASE_URL) {

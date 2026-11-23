@@ -1,65 +1,30 @@
-import React, { useEffect } from 'react';
-import { getAccessInfo, registerApiHandlers } from './api/client';
+import React, { Suspense, lazy } from 'react';
 import { StoreProvider, useStore } from './state/store';
-import { AccessGate } from './ui/components/AccessGate';
 import { AppShell } from './ui/components/AppShell';
-import { Analytics } from './ui/pages/Analytics';
-import { Audit } from './ui/pages/Audit';
-import { Ideas } from './ui/pages/Ideas';
-import { Knowledge } from './ui/pages/Knowledge';
-import { ModelSettings } from './ui/pages/ModelSettings';
-import { SetupChannel } from './ui/pages/SetupChannel';
-import { StyleReferences } from './ui/pages/StyleReferences';
-import { VideoStudio } from './ui/pages/VideoStudio';
+
+const Analytics = lazy(() =>
+  import('./ui/pages/Analytics').then((m) => ({ default: m.Analytics }))
+);
+const Audit = lazy(() => import('./ui/pages/Audit').then((m) => ({ default: m.Audit })));
+const Ideas = lazy(() => import('./ui/pages/Ideas').then((m) => ({ default: m.Ideas })));
+const Knowledge = lazy(() =>
+  import('./ui/pages/Knowledge').then((m) => ({ default: m.Knowledge }))
+);
+const ModelSettings = lazy(() =>
+  import('./ui/pages/ModelSettings').then((m) => ({ default: m.ModelSettings }))
+);
+const SetupChannel = lazy(() =>
+  import('./ui/pages/SetupChannel').then((m) => ({ default: m.SetupChannel }))
+);
+const StyleReferences = lazy(() =>
+  import('./ui/pages/StyleReferences').then((m) => ({ default: m.StyleReferences }))
+);
+const VideoStudio = lazy(() =>
+  import('./ui/pages/VideoStudio').then((m) => ({ default: m.VideoStudio }))
+);
 
 const StudioRouter: React.FC = () => {
-  const { state, dispatch } = useStore();
-
-  useEffect(() => {
-    registerApiHandlers({
-      onUnauthorized: () => {
-        dispatch({
-          type: 'SET_SESSION',
-          patch: {
-            gateEnabled: true,
-            authRequiredPrompt: true,
-            accessCode: '',
-          },
-        });
-      },
-    });
-
-    let cancelled = false;
-    getAccessInfo()
-      .then((info) => {
-        if (cancelled) return;
-        dispatch({
-          type: 'SET_SESSION',
-          patch: {
-            gateEnabled: info.gateEnabled,
-            authRequiredPrompt: info.gateEnabled,
-            authChecked: true,
-          },
-        });
-      })
-      .catch(() => {
-        if (cancelled) return;
-        dispatch({
-          type: 'SET_SESSION',
-          patch: {
-            authChecked: true,
-          },
-        });
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [dispatch]);
-
-  const showGate =
-    state.session.gateEnabled &&
-    (!state.session.accessCode || state.session.authRequiredPrompt);
+  const { state } = useStore();
 
   const renderPage = () => {
     switch (state.currentScreen) {
@@ -83,24 +48,17 @@ const StudioRouter: React.FC = () => {
   };
 
   return (
-    <>
-      {showGate && (
-        <AccessGate
-          onVerified={(accessCode) =>
-            dispatch({
-              type: 'SET_SESSION',
-              patch: {
-                accessCode,
-                authRequiredPrompt: false,
-                gateEnabled: true,
-                authChecked: true,
-              },
-            })
-          }
-        />
-      )}
-      <AppShell>{renderPage()}</AppShell>
-    </>
+    <AppShell>
+      <Suspense
+        fallback={
+          <div role="status" className="p-6 text-xs text-slate-400">
+            Memuat halaman...
+          </div>
+        }
+      >
+        {renderPage()}
+      </Suspense>
+    </AppShell>
   );
 };
 

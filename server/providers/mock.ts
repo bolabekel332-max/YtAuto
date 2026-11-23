@@ -1,8 +1,31 @@
 import { FIXTURES } from './mockFixtures';
 import { ProviderCallError, type LLMProvider, type LLMRequest, type LLMResponse } from './types';
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(
+      new ProviderCallError('timeout', 499, 'Permintaan dibatalkan.', false, {
+        errorKind: 'local_timeout',
+        errorName: 'AbortError',
+      })
+    );
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(
+        new ProviderCallError('timeout', 499, 'Permintaan dibatalkan.', false, {
+          errorKind: 'local_timeout',
+          errorName: 'AbortError',
+        })
+      );
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function detectSimulatedError(req: LLMRequest): string | null {
@@ -28,7 +51,7 @@ export const mockProvider: LLMProvider = {
   async generate(req: LLMRequest, model: string): Promise<LLMResponse> {
     const start = Date.now();
     const latency = Math.min(180, Math.max(40, Math.floor(req.timeoutMs / 1000)));
-    await sleep(latency);
+    await sleep(latency, req.signal);
 
     const simError = detectSimulatedError(req);
     if (simError === '429') {

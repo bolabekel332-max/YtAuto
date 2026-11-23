@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Download, Upload } from 'lucide-react';
+import { Download, Trash2, Upload } from 'lucide-react';
 import { label } from '../../config/labels';
 import { exportAll, importAll, isDirty } from '../../state/persistence';
 import { extractPersistedSnapshot, useStore } from '../../state/store';
@@ -16,6 +16,7 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importCandidate, setImportCandidate] = useState<ExportFile | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
 
   const dirty = isDirty(state);
   const activeNiche =
@@ -64,6 +65,11 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
     setImportCandidate(null);
   };
 
+  const confirmClearAll = () => {
+    dispatch({ type: 'CLEAR_LOCAL_DATA' });
+    setClearConfirmOpen(false);
+  };
+
   return (
     <header className="border-b border-slate-800 bg-slate-950/90 px-6 py-4">
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -80,11 +86,11 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
             <span>{activeLanguage}</span>
             <span aria-hidden="true">·</span>
             <span>
-              {state.profile.platforms.map((p) => label(p)).join(', ')}
+              {label(state.profile.platform)}
             </span>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <input
               ref={fileInputRef}
               type="file"
@@ -120,6 +126,16 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
               label="Panduan Ekspor JSON"
               position="bottom"
             />
+
+            <button
+              type="button"
+              onClick={() => setClearConfirmOpen(true)}
+              aria-label="Hapus semua data lokal"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-950/40 px-2.5 py-1.5 text-xs font-medium text-rose-200 hover:bg-rose-950/70 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400 transition-colors"
+            >
+              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Hapus Data</span>
+            </button>
           </div>
         </div>
       </div>
@@ -147,11 +163,11 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
           aria-label="Konfirmasi Impor Data"
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4"
         >
-          <div className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+          <div className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl space-y-3">
             <h2 className="text-base font-semibold text-slate-100">
               Konfirmasi Impor Cadangan JSON
             </h2>
-            <p className="mt-2 text-xs leading-relaxed text-slate-300">
+            <p className="text-xs leading-relaxed text-slate-300">
               Impor file bertanggal{' '}
               <span className="font-mono text-slate-100">
                 {importCandidate.exportedAt.slice(0, 19).replace('T', ' ')}
@@ -160,7 +176,10 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
               Pengetahuan ({importCandidate.knowledge.length}), Pengaturan Model, dan Riwayat (
               {importCandidate.history.length} entri) saat ini.
             </p>
-            <div className="mt-4 flex justify-end gap-2">
+            <p className="rounded-lg border border-amber-500/40 bg-amber-950/50 px-3 py-2 text-xs text-amber-100 leading-relaxed">
+              Blok pengetahuan dalam file ini akan menjadi instruksi bagi agent. Impor hanya file buatan Anda sendiri.
+            </p>
+            <div className="pt-1 flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setImportCandidate(null)}
@@ -174,6 +193,40 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
                 className="rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-400"
               >
                 Ya, Timpa & Pulihkan
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {clearConfirmOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Konfirmasi Hapus Semua Data Lokal"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4"
+        >
+          <div className="w-full max-w-md rounded-xl border border-rose-500/40 bg-slate-900 p-5 shadow-2xl space-y-3">
+            <h2 className="text-base font-semibold text-rose-100">
+              Hapus Semua Data Lokal?
+            </h2>
+            <p className="text-xs leading-relaxed text-slate-300">
+              Tindakan ini akan menghapus permanen profil channel, profil gaya, suntingan blok pengetahuan, pengaturan model, dan seluruh riwayat run dari browser ini lalu mengembalikannya ke standar awal.
+            </p>
+            <div className="pt-1 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setClearConfirmOpen(false)}
+                className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={confirmClearAll}
+                className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-400"
+              >
+                Ya, Hapus Semua Data Lokal
               </button>
             </div>
           </div>

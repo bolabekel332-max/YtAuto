@@ -23,6 +23,7 @@ function resolveEffectiveJsonMode(desired: JsonMode, provider: LLMProvider): Jso
 
 export interface RunAgentOptions {
   media?: LLMMediaItem[];
+  signal?: AbortSignal;
 }
 
 export async function runAgent(
@@ -93,6 +94,7 @@ export async function runAgent(
     useSearch: shouldUseSearch,
     timeoutMs: validatedConfig.timeoutMs,
     media,
+    signal: options.signal,
   };
 
   let lastTokens: number | undefined;
@@ -133,9 +135,16 @@ export async function runAgent(
 
     // BP 9.4: Validasi skema gagal -> retry satu kali (seluruh panggilan dihitung batas harian)
     if (!validation.ok) {
+      if (options.signal?.aborted) {
+        const abortErr = new Error('Permintaan dibatalkan oleh pengguna.');
+        abortErr.name = 'AbortError';
+        throw abortErr;
+      }
+
       const repairRequest: LLMRequest = {
         ...baseRequest,
         useSearch: false,
+        signal: options.signal,
         messages: [
           ...baseRequest.messages,
           {

@@ -191,6 +191,7 @@ export function mergeProfiles(
     new Set(sources.flatMap((s) => s.profile.referenceIds))
   );
 
+  // Kunci weightsRecord menggunakan profile.id sumber dengan proporsi ternormalisasi.
   const weightsRecord: Record<string, number> = {};
   sources.forEach((s, idx) => {
     weightsRecord[s.profile.id] = Number(weights[idx].toFixed(3));

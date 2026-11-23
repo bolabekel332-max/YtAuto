@@ -7,6 +7,8 @@ import {
   refreshNousAccessToken,
 } from './nousAuth';
 import {
+  combineAbortSignals,
+  parseRetryAfterMs,
   ProviderCallError,
   sanitizeErrorMessage,
   type LLMProvider,
@@ -57,7 +59,8 @@ function extractTextFromChoice(
 function mapNousHttpError(
   status: number,
   rawMsg: string,
-  errCode?: string | number
+  errCode?: string | number,
+  retryAfterMs?: number
 ): ProviderCallError {
   const sanitized = sanitizeErrorMessage(rawMsg);
   let errorKind: ProviderErrorKind = 'provider_error';
@@ -103,6 +106,7 @@ function mapNousHttpError(
     upstreamStatus: status,
     upstreamCode: errCode,
     sanitizedMessage: sanitized,
+    ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
   };
 
   return new ProviderCallError(
@@ -177,37 +181,52 @@ export async function callNousChat(
     payload.response_format = { type: 'json_object' };
   }
 
-  const sendAttempt = async (bearer: string): Promise<Response> => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), req.timeoutMs);
+  if (req.signal?.aborted) {
+    throw new ProviderCallError('timeout', 499, 'Permintaan ke Nous Portal dibatalkan.', false, {
+      errorKind: 'local_timeout',
+      errorName: 'AbortError',
+    });
+  }
+
+  const readAttempt = async (
+    bearer: string
+  ): Promise<{ status: number; ok: boolean; rawText: string; retryAfterMs?: number }> => {
+    const { signal, cleanup } = combineAbortSignals(req.signal, req.timeoutMs);
     try {
-      return await fetchFn(NOUS_CHAT_URL, {
+      const res = await fetchFn(NOUS_CHAT_URL, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${bearer}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(payload),
-        signal: controller.signal,
+        signal,
       });
+      const rawText = await res.text();
+      return {
+        status: res.status,
+        ok: res.ok,
+        rawText,
+        retryAfterMs: parseRetryAfterMs(res.headers.get('retry-after')),
+      };
     } finally {
-      clearTimeout(timer);
+      cleanup();
     }
   };
 
   try {
     let creds = await getNousAccessToken(fetchFn);
-    let res = await sendAttempt(creds.token);
+    let attemptRes = await readAttempt(creds.token);
 
-    if (res.status === 401 && creds.authMethod === 'oauth') {
+    if (attemptRes.status === 401 && creds.authMethod === 'oauth') {
       const refreshed = await refreshNousAccessToken(fetchFn);
       if (refreshed) {
         creds = await getNousAccessToken(fetchFn);
-        res = await sendAttempt(creds.token);
+        attemptRes = await readAttempt(creds.token);
       }
     }
 
-    const rawText = await res.text();
+    const rawText = attemptRes.rawText;
     let data: NousChatResponseBody = {};
     if (rawText.trim().length > 0) {
       try {
@@ -217,9 +236,14 @@ export async function callNousChat(
       }
     }
 
-    if (!res.ok || data.error) {
-      const errMsg = data.error?.message || sanitizeErrorMessage(rawText) || `HTTP ${res.status}`;
-      throw mapNousHttpError(res.status || 502, errMsg, data.error?.code ?? data.error?.type);
+    if (!attemptRes.ok || data.error) {
+      const errMsg = data.error?.message || sanitizeErrorMessage(rawText) || `HTTP ${attemptRes.status}`;
+      throw mapNousHttpError(
+        attemptRes.status || 502,
+        errMsg,
+        data.error?.code ?? data.error?.type,
+        attemptRes.retryAfterMs
+      );
     }
 
     const choice = data.choices?.[0];
@@ -234,6 +258,12 @@ export async function callNousChat(
     };
   } catch (err) {
     if (err instanceof ProviderCallError) throw err;
+    if (req.signal?.aborted) {
+      throw new ProviderCallError('timeout', 499, 'Permintaan ke Nous Portal dibatalkan.', false, {
+        errorKind: 'local_timeout',
+        errorName: 'AbortError',
+      });
+    }
     if (err instanceof Error && err.name === 'AbortError') {
       throw new ProviderCallError(
         'timeout',

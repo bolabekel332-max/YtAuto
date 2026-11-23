@@ -1,6 +1,4 @@
-import { ACCESS_CODE_HEADER } from '../../shared/constants';
 import type {
-  AccessInfo,
   AgentRunRequest,
   AgentRunResponse,
   AgentTestRequest,
@@ -29,30 +27,20 @@ export class ClientApiError extends Error {
   }
 }
 
-export interface ApiCallHandlers {
-  onUnauthorized?: () => void;
-}
-
-let globalHandlers: ApiCallHandlers = {};
-
-export function registerApiHandlers(handlers: ApiCallHandlers): void {
-  globalHandlers = handlers;
-}
-
 async function requestJson<T>(
   path: string,
   options: {
     method: 'GET' | 'POST';
-    accessCode?: string;
     body?: unknown;
+    signal?: AbortSignal;
+    extraHeaders?: Record<string, string>;
   }
 ): Promise<T> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = {
+    ...(options.extraHeaders ?? {}),
+  };
   if (options.body !== undefined) {
     headers['Content-Type'] = 'application/json';
-  }
-  if (options.accessCode && options.accessCode.trim().length > 0) {
-    headers[ACCESS_CODE_HEADER] = options.accessCode.trim();
   }
 
   let response: Response;
@@ -61,8 +49,16 @@ async function requestJson<T>(
       method: options.method,
       headers,
       body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      signal: options.signal,
     });
   } catch (err) {
+    if (
+      options.signal?.aborted ||
+      (err instanceof DOMException && err.name === 'AbortError') ||
+      (err instanceof Error && err.name === 'AbortError')
+    ) {
+      throw new DOMException('Permintaan dibatalkan oleh pengguna.', 'AbortError');
+    }
     throw new ClientApiError(
       0,
       'provider_error',
@@ -95,116 +91,93 @@ async function requestJson<T>(
       errPayload?.error?.message ??
       `Permintaan gagal dengan status HTTP ${response.status}.`;
 
-    if (response.status === 401 && globalHandlers.onUnauthorized) {
-      globalHandlers.onUnauthorized();
-    }
-
     throw new ClientApiError(response.status, code, message);
   }
 
   return parsedBody as T;
 }
 
-export function getAccessInfo(): Promise<AccessInfo> {
-  return requestJson<AccessInfo>('/api/access', { method: 'GET' });
-}
-
-export function getProviderStatus(accessCode?: string): Promise<ProvidersStatusResponse> {
+export function getProviderStatus(): Promise<ProvidersStatusResponse> {
   return requestJson<ProvidersStatusResponse>('/api/providers/status', {
     method: 'GET',
-    accessCode,
   });
 }
 
 export function runAgent(
   payload: AgentRunRequest,
-  accessCode?: string
+  signal?: AbortSignal
 ): Promise<AgentRunResponse> {
   return requestJson<AgentRunResponse>('/api/agent/run', {
     method: 'POST',
     body: payload,
-    accessCode,
+    signal,
   });
 }
 
 export function testAgent(
   payload: AgentTestRequest,
-  accessCode?: string
+  signal?: AbortSignal
 ): Promise<AgentRunResponse> {
   return requestJson<AgentRunResponse>('/api/agent/test', {
     method: 'POST',
     body: payload,
-    accessCode,
+    signal,
   });
 }
 
-export function testProvider(
-  payload: ProviderTestRequest,
-  accessCode?: string
-): Promise<ProviderTestResponse> {
+export function testProvider(payload: ProviderTestRequest): Promise<ProviderTestResponse> {
   return requestJson<ProviderTestResponse>('/api/providers/test', {
     method: 'POST',
     body: payload,
-    accessCode,
   });
 }
 
 export function analyzeStyle(
   payload: StyleAnalyzeRequest,
-  accessCode?: string
+  signal?: AbortSignal
 ): Promise<StyleAnalyzeResponse> {
   return requestJson<StyleAnalyzeResponse>('/api/style/analyze', {
     method: 'POST',
     body: payload,
-    accessCode,
+    signal,
   });
 }
 
-export function getNousOAuthStatus(accessCode?: string): Promise<NousOAuthStatusResponse> {
+export function getNousOAuthStatus(): Promise<NousOAuthStatusResponse> {
   return requestJson<NousOAuthStatusResponse>('/api/oauth/nous/status', {
     method: 'GET',
-    accessCode,
   });
 }
 
-export function startNousDeviceAuth(accessCode?: string): Promise<NousDeviceStartResponse> {
+export function startNousDeviceAuth(): Promise<NousDeviceStartResponse> {
   return requestJson<NousDeviceStartResponse>('/api/oauth/nous/device/start', {
     method: 'POST',
-    accessCode,
   });
 }
 
-export function pollNousDeviceAuth(
-  flowId: string,
-  accessCode?: string
-): Promise<NousDevicePollResponse> {
+export function pollNousDeviceAuth(flowId: string): Promise<NousDevicePollResponse> {
   return requestJson<NousDevicePollResponse>('/api/oauth/nous/device/poll', {
     method: 'POST',
     body: { flowId },
-    accessCode,
   });
 }
 
-export function disconnectNousOAuth(accessCode?: string): Promise<NousOAuthStatusResponse> {
+export function disconnectNousOAuth(): Promise<NousOAuthStatusResponse> {
   return requestJson<NousOAuthStatusResponse>('/api/oauth/nous/disconnect', {
     method: 'POST',
-    accessCode,
   });
 }
 
-export function getNousModels(accessCode?: string): Promise<NousModelsResponse> {
+export function getNousModels(): Promise<NousModelsResponse> {
   return requestJson<NousModelsResponse>('/api/oauth/nous/models', {
     method: 'GET',
-    accessCode,
   });
 }
 
 export function getProviderModels(
-  providerId: 'openrouter' | 'nous',
-  accessCode?: string
+  providerId: 'openrouter' | 'nous'
 ): Promise<ProviderModelsResponse> {
   return requestJson<ProviderModelsResponse>(`/api/providers/${providerId}/models`, {
     method: 'GET',
-    accessCode,
   });
 }

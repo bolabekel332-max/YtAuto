@@ -33,7 +33,7 @@ export interface PipelineContext {
   modelConfigs: AgentModelConfig[];
   knowledge: KnowledgeBlock[];
   history: HistoryEntry[];
-  accessCode: string;
+  signal?: AbortSignal;
   onRunUpdate: (run: PipelineRun) => void;
   onHistorySave: (entry: HistoryEntry) => void;
 }
@@ -237,6 +237,15 @@ async function executeSingleStep(
   activeStyle: StyleProfile | undefined,
   revisionFeedback?: RevisionFeedback
 ): Promise<{ ok: true; run: PipelineRun; result: AgentResult } | { ok: false; run: PipelineRun }> {
+  if (ctx.signal?.aborted) {
+    const abortedRun: PipelineRun = {
+      ...run,
+      status: 'interrupted',
+    };
+    ctx.onRunUpdate(abortedRun);
+    return { ok: false, run: abortedRun };
+  }
+
   let working: PipelineRun = {
     ...run,
     status: 'running',
@@ -264,7 +273,7 @@ async function executeSingleStep(
         knowledge: ctx.knowledge,
         config: getConfigFor(ctx.modelConfigs, stepId),
       },
-      ctx.accessCode
+      ctx.signal
     );
 
     working = {
@@ -280,6 +289,26 @@ async function executeSingleStep(
     ctx.onRunUpdate(working);
     return { ok: true, run: working, result };
   } catch (err) {
+    const isAborted =
+      Boolean(ctx.signal?.aborted) ||
+      (err instanceof DOMException && err.name === 'AbortError');
+    if (isAborted) {
+      working = {
+        ...working,
+        status: 'interrupted',
+        steps: {
+          ...working.steps,
+          [stepId]: {
+            ...working.steps[stepId],
+            status: 'idle',
+            error: undefined,
+          },
+        },
+      };
+      ctx.onRunUpdate(working);
+      return { ok: false, run: working };
+    }
+
     const errorMsg =
       err instanceof Error ? err.message : 'Langkah gagal dijalankan karena error tak terduga.';
     working = {

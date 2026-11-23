@@ -1,5 +1,5 @@
-import React from 'react';
-import { CopyPlus, FolderOpen, History } from 'lucide-react';
+import React, { useState } from 'react';
+import { CopyPlus, FolderOpen, History, Trash2 } from 'lucide-react';
 import type { PackagingOutput } from '../../../shared/agentSchemas';
 import type { HistoryEntry } from '../../../shared/schemas';
 import { label } from '../../config/labels';
@@ -11,6 +11,7 @@ export interface HistoryPanelProps {
   activeRunId?: string;
   onOpenEntry: (entry: HistoryEntry) => void;
   onDuplicateEntry: (entry: HistoryEntry) => void;
+  onDeleteEntry?: (id: string) => void;
 }
 
 export const HistoryPanel: React.FC<HistoryPanelProps> = ({
@@ -18,7 +19,10 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
   activeRunId,
   onOpenEntry,
   onDuplicateEntry,
+  onDeleteEntry,
 }) => {
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2">
@@ -51,6 +55,7 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
             const lastVerdict =
               entry.run.complianceRounds[entry.run.complianceRounds.length - 1];
             const isCurrent = activeRunId === entry.id;
+            const isConfirming = confirmId === entry.id;
 
             return (
               <div
@@ -81,7 +86,7 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
                   <StatusBadge value={entry.run.status} kind="run" />
                 </div>
 
-                <div className="mt-2.5 flex items-center gap-2">
+                <div className="mt-2.5 flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={() => onOpenEntry(entry)}
@@ -98,6 +103,38 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
                     <CopyPlus className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
                     <span>Duplikasi</span>
                   </button>
+                  {onDeleteEntry && !isConfirming && (
+                    <button
+                      type="button"
+                      aria-label={`Hapus riwayat ${chosenTitle}`}
+                      onClick={() => setConfirmId(entry.id)}
+                      className="ml-auto inline-flex items-center gap-1 rounded-md border border-slate-800 bg-slate-900 px-2 py-1 text-xs text-slate-400 hover:border-rose-500/40 hover:text-rose-300"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                      <span>Hapus</span>
+                    </button>
+                  )}
+                  {onDeleteEntry && isConfirming && (
+                    <div className="ml-auto flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onDeleteEntry(entry.id);
+                          setConfirmId(null);
+                        }}
+                        className="rounded-md bg-rose-500 px-2 py-1 text-[11px] font-semibold text-white hover:bg-rose-400"
+                      >
+                        Yakin Hapus
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmId(null)}
+                        className="rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-700"
+                      >
+                        Batal
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             );

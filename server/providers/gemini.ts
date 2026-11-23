@@ -1,6 +1,7 @@
 import { GoogleGenAI, ThinkingLevel, type Part } from '@google/genai';
 import { getEnv } from '../config';
 import {
+  combineAbortSignals,
   ProviderCallError,
   sanitizeErrorMessage,
   type LLMProvider,
@@ -10,16 +11,65 @@ import {
   type ProviderErrorMeta,
 } from './types';
 
-function createGeminiClient(): GoogleGenAI {
-  const { geminiApiKey } = getEnv();
-  return new GoogleGenAI({
-    apiKey: geminiApiKey,
+let cachedGeminiApiKey = '';
+let cachedGeminiClient: GoogleGenAI | null = null;
+
+export function getGeminiClient(apiKey = getEnv().geminiApiKey): GoogleGenAI {
+  if (cachedGeminiClient && cachedGeminiApiKey === apiKey) {
+    return cachedGeminiClient;
+  }
+  cachedGeminiApiKey = apiKey;
+  cachedGeminiClient = new GoogleGenAI({
+    apiKey,
     httpOptions: {
       headers: {
         'User-Agent': 'aistudio-build',
       },
     },
   });
+  return cachedGeminiClient;
+}
+
+export function resetGeminiClientCacheForTests(): void {
+  cachedGeminiApiKey = '';
+  cachedGeminiClient = null;
+}
+
+export interface GeminiSafetyResponseShape {
+  promptFeedback?: { blockReason?: string; blockReasonMessage?: string };
+  candidates?: Array<{ finishReason?: string }>;
+}
+
+const ALLOWED_FINISH_REASONS = new Set(['STOP', 'MAX_TOKENS', 'FINISH_REASON_UNSPECIFIED']);
+
+export function assertGeminiResponseNotBlocked(response: GeminiSafetyResponseShape): void {
+  const blockReason = response.promptFeedback?.blockReason;
+  if (blockReason && blockReason !== 'BLOCK_REASON_UNSPECIFIED') {
+    throw new ProviderCallError(
+      'provider_error',
+      502,
+      `Respons diblokir oleh filter keamanan Gemini (${blockReason}). Ubah formulasi topik atau parameter.`,
+      false,
+      {
+        errorKind: 'provider_error',
+        upstreamCode: blockReason,
+      }
+    );
+  }
+
+  const finishReason = response.candidates?.[0]?.finishReason;
+  if (finishReason && !ALLOWED_FINISH_REASONS.has(finishReason)) {
+    throw new ProviderCallError(
+      'provider_error',
+      502,
+      `Respons diblokir oleh filter keamanan Gemini (${finishReason}). Ubah formulasi topik atau parameter.`,
+      false,
+      {
+        errorKind: 'provider_error',
+        upstreamCode: finishReason,
+      }
+    );
+  }
 }
 
 /**
@@ -586,7 +636,7 @@ export const geminiProvider: LLMProvider = {
       );
     }
 
-    const ai = createGeminiClient();
+    const ai = getGeminiClient();
     const parts = buildParts(req);
     const hasYoutubeMedia = Boolean(req.media?.some((m) => m.type === 'youtube_url'));
 
@@ -610,8 +660,14 @@ export const geminiProvider: LLMProvider = {
       config.responseMimeType = 'application/json';
     }
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), req.timeoutMs);
+    if (req.signal?.aborted) {
+      throw new ProviderCallError('timeout', 499, 'Permintaan ke Gemini dibatalkan.', false, {
+        errorKind: 'local_timeout',
+        errorName: 'AbortError',
+      });
+    }
+
+    const { signal, cleanup, isCallerAborted } = combineAbortSignals(req.signal, req.timeoutMs);
 
     try {
       const response = await ai.models.generateContent({
@@ -619,9 +675,11 @@ export const geminiProvider: LLMProvider = {
         contents: [{ role: 'user', parts }],
         config: {
           ...config,
-          abortSignal: controller.signal,
+          abortSignal: signal,
         },
       });
+
+      assertGeminiResponseNotBlocked(response as GeminiSafetyResponseShape);
 
       const candidate = response.candidates?.[0];
       const finishReason = candidate?.finishReason;
@@ -657,9 +715,18 @@ export const geminiProvider: LLMProvider = {
         truncated: false,
       };
     } catch (err) {
+      if (err instanceof ProviderCallError) {
+        throw err;
+      }
+      if (isCallerAborted()) {
+        throw new ProviderCallError('timeout', 499, 'Permintaan ke Gemini dibatalkan.', false, {
+          errorKind: 'local_timeout',
+          errorName: 'AbortError',
+        });
+      }
       throw mapGeminiError(err, hasYoutubeMedia);
     } finally {
-      clearTimeout(timer);
+      cleanup();
     }
   },
 
@@ -674,7 +741,7 @@ export const geminiProvider: LLMProvider = {
     }
 
     const start = Date.now();
-    const ai = createGeminiClient();
+    const ai = getGeminiClient();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 20_000);
 

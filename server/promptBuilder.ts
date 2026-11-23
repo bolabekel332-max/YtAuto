@@ -9,9 +9,10 @@ import { toJsonSchema, type SchemaId } from '../shared/agentSchemas';
 export function wrapAsData(label: string, payload: unknown): string {
   const serialized =
     typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
-  const sanitized = serialized
-    .replaceAll('[DATA_UNTRUSTED_START', '[DATA_ESCAPED_START')
-    .replaceAll('[DATA_UNTRUSTED_END', '[DATA_ESCAPED_END');
+  const sanitized = serialized.replace(
+    /\[\s*DATA_(?:UNTRUSTED|ESCAPED)_(START|END)/gi,
+    (_match, boundary: string) => `[DATA_ESCAPED_${boundary.toUpperCase()}`
+  );
 
   return [
     `[DATA_UNTRUSTED_START: ${label}]`,
@@ -106,12 +107,15 @@ export function buildSystemPrompt(params: {
   const knowledgeText =
     relevantBlocks.length > 0
       ? relevantBlocks
-          .map(
-            (b) =>
-              `- [${b.id}] (${b.group} | certainty: ${b.certainty} | verifiedAt: ${b.verifiedAt}) ${b.title}: ${b.content}${
-                b.note ? ` (Catatan: ${b.note})` : ''
-              }`
-          )
+          .map((b) => {
+            const safeLabelId = b.id.replace(/[^A-Za-z0-9._-]/g, '_');
+            const wrappedData = wrapAsData(`KNOWLEDGE_${safeLabelId}`, {
+              title: b.title,
+              content: b.content,
+              ...(b.note ? { note: b.note } : {}),
+            });
+            return `- [${b.id}] (${b.group} | certainty: ${b.certainty} | verifiedAt: ${b.verifiedAt})\n${wrappedData}`;
+          })
           .join('\n')
       : '- Tidak ada blok pengetahuan khusus yang dilampirkan.';
 
@@ -132,7 +136,7 @@ export function buildSystemPrompt(params: {
     },
     language: resolveChannelField(params.profile.language, params.profile.customLanguage),
     tone: resolveChannelField(params.profile.tone, params.profile.customTone),
-    platforms: params.profile.platforms,
+    platform: params.profile.platform,
     postingFrequency: resolveChannelField(
       params.profile.postingFrequency,
       params.profile.customPostingFrequency

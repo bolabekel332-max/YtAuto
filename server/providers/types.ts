@@ -24,6 +24,7 @@ export interface LLMRequest {
   useSearch: boolean;
   timeoutMs: number;
   media?: LLMMediaItem[];
+  signal?: AbortSignal;
 }
 
 export interface LLMResponse {
@@ -66,6 +67,40 @@ export interface ProviderErrorMeta {
   upstreamStatusText?: string;
   errorName?: string;
   sanitizedMessage?: string;
+  retryAfterMs?: number;
+}
+
+export function parseRetryAfterMs(headerVal: string | null | undefined): number | undefined {
+  if (!headerVal) return undefined;
+  const trimmed = headerVal.trim();
+  if (!trimmed) return undefined;
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.round(seconds * 1000);
+  }
+  const dateMs = Date.parse(trimmed);
+  if (Number.isFinite(dateMs)) {
+    const diff = dateMs - Date.now();
+    return diff > 0 ? diff : 0;
+  }
+  return undefined;
+}
+
+export function combineAbortSignals(
+  callerSignal: AbortSignal | undefined,
+  timeoutMs: number
+): { signal: AbortSignal; cleanup: () => void; isCallerAborted: () => boolean } {
+  const timeoutController = new AbortController();
+  const timer = setTimeout(() => timeoutController.abort(), timeoutMs);
+  const signal = callerSignal
+    ? AbortSignal.any([timeoutController.signal, callerSignal])
+    : timeoutController.signal;
+
+  return {
+    signal,
+    cleanup: () => clearTimeout(timer),
+    isCallerAborted: () => Boolean(callerSignal?.aborted),
+  };
 }
 
 export function sanitizeErrorMessage(raw: unknown, maxLen = 280): string {

@@ -37,6 +37,9 @@ function checkAborted(signal?: AbortSignal): void {
   }
 }
 
+const SEEK_TIMEOUT_MS = 10_000;
+const LOAD_TIMEOUT_MS = 20_000;
+
 function seekVideo(
   video: HTMLVideoElement,
   timeSec: number,
@@ -44,6 +47,23 @@ function seekVideo(
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     checkAborted(signal);
+    const targetTime = Math.max(0, timeSec);
+    if (Math.abs(video.currentTime - targetTime) < 0.001) {
+      resolve();
+      return;
+    }
+
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const cleanup = () => {
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      video.removeEventListener('seeked', onSeeked);
+      video.removeEventListener('error', onError);
+      signal?.removeEventListener('abort', onAbort);
+    };
 
     const onAbort = () => {
       cleanup();
@@ -60,17 +80,16 @@ function seekVideo(
       reject(new Error('Gagal memproses posisi frame video di browser.'));
     };
 
-    const cleanup = () => {
-      video.removeEventListener('seeked', onSeeked);
-      video.removeEventListener('error', onError);
-      signal?.removeEventListener('abort', onAbort);
-    };
+    timeoutId = setTimeout(() => {
+      cleanup();
+      reject(new Error('Waktu seek frame video habis di browser.'));
+    }, SEEK_TIMEOUT_MS);
 
     video.addEventListener('seeked', onSeeked, { once: true });
     video.addEventListener('error', onError, { once: true });
     signal?.addEventListener('abort', onAbort, { once: true });
 
-    video.currentTime = Math.max(0, timeSec);
+    video.currentTime = targetTime;
   });
 }
 
@@ -94,6 +113,17 @@ async function loadVideoElement(
   try {
     await new Promise<void>((resolve, reject) => {
       checkAborted(signal);
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+      const cleanup = () => {
+        if (timeoutId !== null) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+        video.removeEventListener('loadeddata', onLoaded);
+        video.removeEventListener('error', onErr);
+        signal?.removeEventListener('abort', onAbort);
+      };
 
       const onAbort = () => {
         cleanup();
@@ -116,11 +146,10 @@ async function loadVideoElement(
         );
       };
 
-      const cleanup = () => {
-        video.removeEventListener('loadeddata', onLoaded);
-        video.removeEventListener('error', onErr);
-        signal?.removeEventListener('abort', onAbort);
-      };
+      timeoutId = setTimeout(() => {
+        cleanup();
+        reject(new Error('Waktu memuat metadata video habis di browser.'));
+      }, LOAD_TIMEOUT_MS);
 
       video.addEventListener('loadeddata', onLoaded, { once: true });
       video.addEventListener('error', onErr, { once: true });
@@ -284,14 +313,14 @@ export async function extractKeyFrames(
 export async function resizeUploadedImages(
   files: File[],
   signal?: AbortSignal
-): Promise<Array<{ mimeType: string; data: string; previewDataUrl: string }>> {
+): Promise<Array<{ mimeType: 'image/jpeg'; data: string; previewDataUrl: string }>> {
   if (files.length < MAX_IMAGES_MIN || files.length > MAX_IMAGES_MAX) {
     throw new Error(
       `Unggah antara ${MAX_IMAGES_MIN} hingga ${MAX_IMAGES_MAX} gambar untuk referensi gaya.`
     );
   }
 
-  const results: Array<{ mimeType: string; data: string; previewDataUrl: string }> = [];
+  const results: Array<{ mimeType: 'image/jpeg'; data: string; previewDataUrl: string }> = [];
 
   for (const file of files) {
     checkAborted(signal);

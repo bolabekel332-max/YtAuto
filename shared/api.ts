@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MODEL_ID_REGEX } from './constants';
 import {
   AgentIdSchema,
   AgentModelConfigSchema,
@@ -12,13 +13,12 @@ import {
 import { styleAnalystIn } from './agentInputs';
 
 export const API_ERROR_CODES = [
+  'unauthorized',
   'invalid_request',
   'capability_missing',
-  'unauthorized',
   'payload_too_large',
   'rate_limited',
   'daily_cap',
-  'auth_locked',
   'provider_error',
   'output_invalid',
   'output_truncated',
@@ -28,13 +28,12 @@ export const API_ERROR_CODES = [
 export type ApiErrorCode = (typeof API_ERROR_CODES)[number];
 
 export const ERROR_HTTP_STATUS: Record<ApiErrorCode, number> = {
+  unauthorized: 401,
   invalid_request: 400,
   capability_missing: 400,
-  unauthorized: 401,
   payload_too_large: 413,
   rate_limited: 429,
   daily_cap: 429,
-  auth_locked: 429,
   provider_error: 502,
   output_invalid: 502,
   output_truncated: 502,
@@ -56,7 +55,7 @@ export const AgentRunRequestSchema = z.object({
   revisionFeedback: RevisionFeedbackSchema.optional(),
   profile: ChannelProfileSchema,
   styleProfile: StyleProfileSchema.optional(),
-  knowledge: z.array(KnowledgeBlockSchema),
+  knowledge: z.array(KnowledgeBlockSchema).max(32),
   config: AgentModelConfigSchema,
 });
 export type AgentRunRequest = z.infer<typeof AgentRunRequestSchema>;
@@ -65,28 +64,28 @@ export const AgentTestRequestSchema = z.object({
   agentId: AgentIdSchema,
   mode: z.enum(['default', 'audit']).optional(),
   profile: ChannelProfileSchema.optional(),
-  knowledge: z.array(KnowledgeBlockSchema).optional(),
+  knowledge: z.array(KnowledgeBlockSchema).max(32).optional(),
   config: AgentModelConfigSchema,
 });
 export type AgentTestRequest = z.infer<typeof AgentTestRequestSchema>;
 
 export const ProviderTestRequestSchema = z.object({
   providerId: ProviderIdSchema,
-  model: z.string().min(1),
+  model: z
+    .string()
+    .min(1)
+    .max(120)
+    .regex(MODEL_ID_REGEX, 'ID model mengandung karakter tidak valid.'),
 });
 export type ProviderTestRequest = z.infer<typeof ProviderTestRequestSchema>;
 
 export const StyleAnalyzeRequestSchema = z.object({
   reference: styleAnalystIn,
   profile: ChannelProfileSchema,
-  knowledge: z.array(KnowledgeBlockSchema),
+  knowledge: z.array(KnowledgeBlockSchema).max(32),
   config: AgentModelConfigSchema,
 });
 export type StyleAnalyzeRequest = z.infer<typeof StyleAnalyzeRequestSchema>;
-
-export interface AccessInfo {
-  gateEnabled: boolean;
-}
 
 export interface ProviderCapabilities {
   jsonSchema: boolean;

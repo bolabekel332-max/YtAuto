@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { Loader2, Plus, ShieldCheck, Trash2 } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Loader2, Plus, ShieldCheck, Trash2, XCircle } from 'lucide-react';
 import { MAX_AUDIT_VIDEOS } from '../../../shared/constants';
 import type { AuditVideoItem } from '../../../shared/agentInputs';
 import type { OrchestratorOutput, PackagingOutput } from '../../../shared/agentSchemas';
@@ -49,17 +49,44 @@ export const Audit: React.FC = () => {
   const [manualTitle, setManualTitle] = useState('');
   const [manualSummary, setManualSummary] = useState('');
   const [manualPlatform, setManualPlatform] = useState<Platform>(
-    state.profile.platforms[0] ?? 'youtube_shorts'
+    state.profile.platform ?? 'youtube_shorts'
   );
   const [manualDate, setManualDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [styleProfileId, setStyleProfileId] = useState<string>(
-    state.profile.visualStyle.mode === 'reference'
-      ? state.profile.visualStyle.defaultStyleProfileId ?? ''
-      : ''
-  );
+  const isRefVisualActive =
+    state.profile.visualStyle.mode === 'reference' ||
+    (state.profile.visualStyle.mode === 'template' &&
+      state.profile.visualStyle.template === 'Berdasarkan referensi kreator');
+
+  const defaultStyleId =
+    isRefVisualActive &&
+    state.profile.visualStyle.defaultStyleProfileId &&
+    state.styleProfiles.some((sp) => sp.id === state.profile.visualStyle.defaultStyleProfileId)
+      ? state.profile.visualStyle.defaultStyleProfileId
+      : '';
+
+  const [styleProfileId, setStyleProfileId] = useState<string>(defaultStyleId);
+
+  const effectiveStyleProfileId =
+    styleProfileId && state.styleProfiles.some((sp) => sp.id === styleProfileId)
+      ? styleProfileId
+      : '';
 
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    if (styleProfileId && effectiveStyleProfileId !== styleProfileId) {
+      setStyleProfileId('');
+    }
+  }, [styleProfileId, effectiveStyleProfileId]);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   const includedHistory = historyItems.filter(
     (h) => !excludedHistoryIds.includes(h.id)
@@ -104,6 +131,7 @@ export const Audit: React.FC = () => {
 
   const handleRunAudit = async () => {
     setErrorMsg(null);
+    setStatusMsg(null);
     if (combinedVideos.length === 0) {
       setErrorMsg(
         'Pilih minimal 1 video dari riwayat atau tambahkan entri manual untuk diaudit.'
@@ -111,10 +139,12 @@ export const Audit: React.FC = () => {
       return;
     }
 
-    const activeStyle = styleProfileId
-      ? state.styleProfiles.find((sp) => sp.id === styleProfileId)
+    const activeStyle = effectiveStyleProfileId
+      ? state.styleProfiles.find((sp) => sp.id === effectiveStyleProfileId)
       : undefined;
 
+    const controller = new AbortController();
+    abortRef.current = controller;
     setLoading(true);
     try {
       const result = await runAgent(
@@ -130,12 +160,17 @@ export const Audit: React.FC = () => {
           knowledge: state.knowledge,
           config: complianceConfig,
         },
-        state.session.accessCode
+        controller.signal
       );
       dispatch({ type: 'SET_LAST_AUDIT', result });
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Gagal menjalankan Audit Konten.');
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        setStatusMsg('Permintaan audit konten dibatalkan oleh pengguna.');
+      } else {
+        setErrorMsg(err instanceof Error ? err.message : 'Gagal menjalankan Audit Konten.');
+      }
     } finally {
+      abortRef.current = null;
       setLoading(false);
     }
   };
@@ -290,7 +325,7 @@ export const Audit: React.FC = () => {
           <div className="grid gap-4 md:grid-cols-2 border-t border-slate-800/80 pt-4">
             <SelectField
               label="Profil Gaya Referensi yang Dibandingkan (Opsional)"
-              value={styleProfileId}
+              value={effectiveStyleProfileId}
               options={[
                 { value: '', label: 'Tidak membandingkan profil gaya khusus' },
                 ...state.styleProfiles.map((sp) => ({
@@ -302,6 +337,15 @@ export const Audit: React.FC = () => {
               tooltip="Jika dipilih, audit juga memeriksa apakah kumpulan video terlalu bergantung pada satu referensi gaya."
             />
           </div>
+
+          {statusMsg && (
+            <div
+              role="status"
+              className="rounded-xl border border-amber-500/40 bg-amber-950/40 px-4 py-3 text-xs text-amber-100"
+            >
+              {statusMsg}
+            </div>
+          )}
 
           {errorMsg && (
             <div
@@ -316,23 +360,35 @@ export const Audit: React.FC = () => {
             <span className="text-xs text-slate-400">
               Menggunakan agent Kepatuhan (mode audit · {label(complianceConfig.providerId)})
             </span>
-            <button
-              type="button"
-              disabled={loading || combinedVideos.length === 0}
-              onClick={handleRunAudit}
-              className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
-            >
-              {loading ? (
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              ) : (
-                <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+            <div className="flex flex-wrap items-center gap-2">
+              {loading && (
+                <button
+                  type="button"
+                  onClick={() => abortRef.current?.abort()}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-950/50 px-3 py-2 text-xs font-medium text-rose-200 hover:bg-rose-950/80"
+                >
+                  <XCircle className="h-4 w-4" aria-hidden="true" />
+                  <span>Batalkan</span>
+                </button>
               )}
-              <span>
-                {loading
-                  ? 'Mengaudit Video...'
-                  : `Jalankan Audit (${combinedVideos.length} Video)`}
-              </span>
-            </button>
+              <button
+                type="button"
+                disabled={loading || combinedVideos.length === 0}
+                onClick={handleRunAudit}
+                className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+              >
+                {loading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                )}
+                <span>
+                  {loading
+                    ? 'Mengaudit Video...'
+                    : `Jalankan Audit (${combinedVideos.length} Video)`}
+                </span>
+              </button>
+            </div>
           </div>
         </div>
       </Card>

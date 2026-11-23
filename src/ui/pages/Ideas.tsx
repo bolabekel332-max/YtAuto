@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Lightbulb, Loader2, Sparkles } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Lightbulb, Loader2, Sparkles, XCircle } from 'lucide-react';
 import type { Platform } from '../../../shared/schemas';
 import { runAgent } from '../../api/client';
 import { label } from '../../config/labels';
@@ -13,12 +13,20 @@ import { AgentOutput } from '../renderers/AgentOutput';
 export const Ideas: React.FC = () => {
   const { state, dispatch } = useStore();
   const [targetPlatform, setTargetPlatform] = useState<Platform>(
-    state.profile.platforms[0] ?? 'youtube_shorts'
+    state.profile.platform ?? 'youtube_shorts'
   );
   const [topic, setTopic] = useState('');
   const [existingIdeasText, setExistingIdeasText] = useState('');
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   const researcherConfig =
     state.modelConfigs.find((c) => c.agentId === 'researcher') ??
@@ -27,6 +35,9 @@ export const Ideas: React.FC = () => {
   const handleRunResearch = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+    setStatusMsg(null);
+    const controller = new AbortController();
+    abortRef.current = controller;
     setLoading(true);
     try {
       const existingIdeas = existingIdeasText
@@ -48,30 +59,44 @@ export const Ideas: React.FC = () => {
           knowledge: state.knowledge,
           config: researcherConfig,
         },
-        state.session.accessCode
+        controller.signal
       );
 
       dispatch({ type: 'SET_LAST_IDEAS', result });
     } catch (err) {
-      setErrorMsg(
-        err instanceof Error ? err.message : 'Gagal menjalankan agent Periset.'
-      );
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        setStatusMsg('Permintaan riset ide dibatalkan oleh pengguna.');
+      } else {
+        setErrorMsg(
+          err instanceof Error ? err.message : 'Gagal menjalankan agent Periset.'
+        );
+      }
     } finally {
+      abortRef.current = null;
       setLoading(false);
     }
   };
 
   const handleSendToStudio = (ideaTitle: string) => {
+    const isRefVisualActive =
+      state.profile.visualStyle.mode === 'reference' ||
+      (state.profile.visualStyle.mode === 'template' &&
+        state.profile.visualStyle.template === 'Berdasarkan referensi kreator');
+    const configuredId = state.profile.visualStyle.defaultStyleProfileId;
+    const validStyleId =
+      isRefVisualActive &&
+      configuredId &&
+      state.styleProfiles.some((sp) => sp.id === configuredId)
+        ? configuredId
+        : undefined;
+
     dispatch({
       type: 'SET_DRAFT_RUN_INPUT',
       input: {
         topic: ideaTitle,
         targetPlatform,
         includeResearch: false,
-        styleProfileId:
-          state.profile.visualStyle.mode === 'reference'
-            ? state.profile.visualStyle.defaultStyleProfileId
-            : undefined,
+        styleProfileId: validStyleId,
       },
     });
     dispatch({ type: 'SET_SCREEN', screen: 'studio' });
@@ -135,6 +160,15 @@ export const Ideas: React.FC = () => {
             />
           </div>
 
+          {statusMsg && (
+            <div
+              role="status"
+              className="rounded-xl border border-amber-500/40 bg-amber-950/40 px-4 py-3 text-xs text-amber-100"
+            >
+              {statusMsg}
+            </div>
+          )}
+
           {errorMsg && (
             <div
               role="alert"
@@ -152,18 +186,30 @@ export const Ideas: React.FC = () => {
                 ? ' · Pencarian Web Aktif'
                 : ''}
             </span>
-            <button
-              type="submit"
-              disabled={loading}
-              className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 transition-colors"
-            >
-              {loading ? (
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              ) : (
-                <Sparkles className="h-4 w-4" aria-hidden="true" />
+            <div className="flex flex-wrap items-center gap-2">
+              {loading && (
+                <button
+                  type="button"
+                  onClick={() => abortRef.current?.abort()}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-950/50 px-3 py-2 text-xs font-medium text-rose-200 hover:bg-rose-950/80"
+                >
+                  <XCircle className="h-4 w-4" aria-hidden="true" />
+                  <span>Batalkan</span>
+                </button>
               )}
-              <span>{loading ? 'Sedang Meriset Ide...' : 'Hasilkan Ide & Kalender'}</span>
-            </button>
+              <button
+                type="submit"
+                disabled={loading}
+                className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 transition-colors"
+              >
+                {loading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Sparkles className="h-4 w-4" aria-hidden="true" />
+                )}
+                <span>{loading ? 'Sedang Meriset Ide...' : 'Hasilkan Ide & Kalender'}</span>
+              </button>
+            </div>
           </div>
         </form>
       </Card>

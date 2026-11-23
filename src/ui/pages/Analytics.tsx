@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { BarChart3, Info, Loader2, Upload } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { BarChart3, Info, Loader2, Upload, XCircle } from 'lucide-react';
 import { MAX_PASTE_CHARS } from '../../../shared/constants';
 import type { Platform } from '../../../shared/schemas';
 import { runAgent } from '../../api/client';
@@ -11,16 +11,26 @@ import { SelectField } from '../components/FormFields';
 import { Tooltip } from '../components/Tooltip';
 import { AgentOutput } from '../renderers/AgentOutput';
 
+const LARGE_FILE_BYTES = 1_000_000;
+
 export const Analytics: React.FC = () => {
   const { state, dispatch } = useStore();
   const [targetPlatform, setTargetPlatform] = useState<Platform>(
-    state.profile.platforms[0] ?? 'youtube_shorts'
+    state.profile.platform ?? 'youtube_shorts'
   );
   const [period, setPeriod] = useState('');
   const [metricsText, setMetricsText] = useState('');
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [truncateWarn, setTruncateWarn] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   const analystConfig =
     state.modelConfigs.find((c) => c.agentId === 'analyst') ?? state.modelConfigs[0];
@@ -30,13 +40,22 @@ export const Analytics: React.FC = () => {
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      const raw = await file.text();
-      if (raw.length > MAX_PASTE_CHARS) {
-        setMetricsText(raw.slice(0, MAX_PASTE_CHARS));
+      const readPartial = file.size > LARGE_FILE_BYTES;
+      const raw = readPartial
+        ? await file.slice(0, MAX_PASTE_CHARS * 4).text()
+        : await file.text();
+
+      if (readPartial || raw.length > MAX_PASTE_CHARS) {
+        let sliced = raw.slice(0, MAX_PASTE_CHARS);
+        const lastNewline = sliced.lastIndexOf('\n');
+        if (lastNewline >= Math.floor(MAX_PASTE_CHARS * 0.5)) {
+          sliced = sliced.slice(0, lastNewline);
+        }
+        setMetricsText(sliced);
         setTruncateWarn(
           `File melebihi batas ${MAX_PASTE_CHARS.toLocaleString(
             'id-ID'
-          )} karakter dan otomatis dipotong agar sesuai kapasitas analisis.`
+          )} karakter dan otomatis dipotong pada batas baris agar sesuai kapasitas analisis.`
         );
       } else {
         setMetricsText(raw);
@@ -49,11 +68,14 @@ export const Analytics: React.FC = () => {
   const handleRunAnalysis = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+    setStatusMsg(null);
     if (!metricsText.trim()) {
       setErrorMsg('Tempel data metrik atau unggah file CSV/TSV terlebih dahulu.');
       return;
     }
 
+    const controller = new AbortController();
+    abortRef.current = controller;
     setLoading(true);
     try {
       const result = await runAgent(
@@ -69,14 +91,19 @@ export const Analytics: React.FC = () => {
           knowledge: state.knowledge,
           config: analystConfig,
         },
-        state.session.accessCode
+        controller.signal
       );
       dispatch({ type: 'SET_LAST_ANALYSIS', result });
     } catch (err) {
-      setErrorMsg(
-        err instanceof Error ? err.message : 'Gagal menjalankan agent Analis Performa.'
-      );
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        setStatusMsg('Permintaan analisis performa dibatalkan oleh pengguna.');
+      } else {
+        setErrorMsg(
+          err instanceof Error ? err.message : 'Gagal menjalankan agent Analis Performa.'
+        );
+      }
     } finally {
+      abortRef.current = null;
       setLoading(false);
     }
   };
@@ -177,6 +204,15 @@ export const Analytics: React.FC = () => {
             </div>
           )}
 
+          {statusMsg && (
+            <div
+              role="status"
+              className="rounded-xl border border-amber-500/40 bg-amber-950/40 px-4 py-3 text-xs text-amber-100"
+            >
+              {statusMsg}
+            </div>
+          )}
+
           {errorMsg && (
             <div
               role="alert"
@@ -190,18 +226,30 @@ export const Analytics: React.FC = () => {
             <span className="text-xs text-slate-400">
               Menggunakan agent Analis Performa ({label(analystConfig.providerId)})
             </span>
-            <button
-              type="submit"
-              disabled={loading}
-              className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
-            >
-              {loading ? (
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              ) : (
-                <BarChart3 className="h-4 w-4" aria-hidden="true" />
+            <div className="flex flex-wrap items-center gap-2">
+              {loading && (
+                <button
+                  type="button"
+                  onClick={() => abortRef.current?.abort()}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-950/50 px-3 py-2 text-xs font-medium text-rose-200 hover:bg-rose-950/80"
+                >
+                  <XCircle className="h-4 w-4" aria-hidden="true" />
+                  <span>Batalkan</span>
+                </button>
               )}
-              <span>{loading ? 'Menganalisis Data...' : 'Analisis Performa'}</span>
-            </button>
+              <button
+                type="submit"
+                disabled={loading}
+                className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+              >
+                {loading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <BarChart3 className="h-4 w-4" aria-hidden="true" />
+                )}
+                <span>{loading ? 'Menganalisis Data...' : 'Analisis Performa'}</span>
+              </button>
+            </div>
           </div>
         </form>
       </Card>

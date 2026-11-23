@@ -14,6 +14,7 @@ export interface SelectFieldProps {
   customValue?: string;
   onCustomChange?: (value: string) => void;
   customPlaceholder?: string;
+  customMaxLength?: number;
   tooltip?: string;
   helperText?: string;
 }
@@ -26,6 +27,7 @@ export const SelectField: React.FC<SelectFieldProps> = ({
   customValue = '',
   onCustomChange,
   customPlaceholder = 'Isi sendiri...',
+  customMaxLength = 500,
   tooltip,
   helperText,
 }) => {
@@ -63,6 +65,7 @@ export const SelectField: React.FC<SelectFieldProps> = ({
           <input
             id={customId}
             type="text"
+            maxLength={customMaxLength}
             value={customValue}
             onChange={(e) => onCustomChange(e.target.value)}
             placeholder={customPlaceholder}
@@ -83,6 +86,7 @@ export interface ChipGroupProps {
   customValue?: string;
   onCustomChange?: (value: string) => void;
   customPlaceholder?: string;
+  customMaxLength?: number;
   tooltip?: string;
   minSelected?: number;
 }
@@ -95,6 +99,7 @@ export const ChipGroup: React.FC<ChipGroupProps> = ({
   customValue = '',
   onCustomChange,
   customPlaceholder = 'Isi pilihan lainnya...',
+  customMaxLength = 500,
   tooltip,
   minSelected = 1,
 }) => {
@@ -119,23 +124,26 @@ export const ChipGroup: React.FC<ChipGroupProps> = ({
         <span className="text-xs font-medium text-slate-200">{label}</span>
         {tooltip && <Tooltip text={tooltip} label={`Panduan ${label}`} />}
       </div>
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-2.5">
         {normalizedOptions.map((opt) => {
           const active = selected.includes(opt.value);
           return (
-            <button
+            <label
               key={opt.value}
-              type="button"
-              aria-pressed={active}
-              onClick={() => toggle(opt.value)}
-              className={`rounded-lg border px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 ${
+              className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium cursor-pointer transition-colors select-none ${
                 active
-                  ? 'border-sky-500/60 bg-sky-500/15 text-sky-200'
-                  : 'border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-600 hover:text-white'
+                  ? 'border-sky-500/80 bg-sky-500/20 text-sky-100 shadow-sm'
+                  : 'border-slate-800 bg-slate-950/80 text-slate-300 hover:border-slate-700 hover:text-white'
               }`}
             >
-              {opt.label}
-            </button>
+              <input
+                type="checkbox"
+                checked={active}
+                onChange={() => toggle(opt.value)}
+                className="h-4 w-4 rounded border-slate-700 bg-slate-900 accent-sky-400 text-sky-500 focus:ring-sky-400 focus:ring-offset-slate-950"
+              />
+              <span>{opt.label}</span>
+            </label>
           );
         })}
       </div>
@@ -147,6 +155,7 @@ export const ChipGroup: React.FC<ChipGroupProps> = ({
           <input
             id={customId}
             type="text"
+            maxLength={customMaxLength}
             value={customValue}
             onChange={(e) => onCustomChange(e.target.value)}
             placeholder={customPlaceholder}

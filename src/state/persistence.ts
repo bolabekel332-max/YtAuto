@@ -1,6 +1,15 @@
+import { z } from 'zod';
 import { EXPORT_SCHEMA_VERSION, HISTORY_MAX } from '../../shared/constants';
 import {
+  AgentModelConfigSchema,
+  AgentResultSchema,
+  ChannelProfileSchema,
   ExportFileSchema,
+  HistoryEntrySchema,
+  KnowledgeBlockSchema,
+  PipelineRunSchema,
+  StyleProfileSchema,
+  StyleReferenceSchema,
   type AgentModelConfig,
   type AgentResult,
   type ChannelProfile,
@@ -12,7 +21,7 @@ import {
   type StyleReference,
 } from '../../shared/schemas';
 
-const STORAGE_KEY = 'faceless_studio_state_v1';
+export const STORAGE_KEY = 'faceless_studio_state_v1';
 
 export interface PersistedAppData {
   profile: ChannelProfile;
@@ -94,6 +103,43 @@ export function save(data: PersistedAppData): { ok: boolean; warning?: string } 
   }
 }
 
+export function clearLocalData(): void {
+  inMemoryFallback = null;
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.removeItem(STORAGE_KEY);
+    }
+  } catch {
+    // Abaikan jika browser memblokir localStorage
+  }
+}
+
+export function mergeModelConfigs(
+  saved: AgentModelConfig[] | undefined,
+  defaults: AgentModelConfig[]
+): AgentModelConfig[] {
+  if (!saved || saved.length === 0) {
+    return structuredClone(defaults);
+  }
+  const byAgent = new Map(saved.map((c) => [c.agentId, c]));
+  return defaults.map((def) => {
+    const existing = byAgent.get(def.agentId);
+    return existing ? structuredClone(existing) : structuredClone(def);
+  });
+}
+
+export function mergeKnowledgeBlocks(
+  saved: KnowledgeBlock[] | undefined,
+  defaults: KnowledgeBlock[]
+): KnowledgeBlock[] {
+  if (!saved || saved.length === 0) {
+    return structuredClone(defaults);
+  }
+  const existingIds = new Set(saved.map((b) => b.id));
+  const missingDefaults = defaults.filter((d) => !existingIds.has(d.id));
+  return [...structuredClone(saved), ...structuredClone(missingDefaults)];
+}
+
 export function load(): { data: Partial<PersistedAppData> | null; warning?: string } {
   try {
     if (typeof window === 'undefined' || !window.localStorage) {
@@ -104,8 +150,63 @@ export function load(): { data: Partial<PersistedAppData> | null; warning?: stri
     }
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return { data: inMemoryFallback };
-    const parsed = JSON.parse(raw) as Partial<PersistedAppData>;
-    return { data: parsed };
+
+    let parsedRaw: unknown;
+    try {
+      parsedRaw = JSON.parse(raw);
+    } catch {
+      return {
+        data: inMemoryFallback,
+        warning: 'Data tersimpan di localStorage rusak (JSON tidak valid); memuat konfigurasi awal.',
+      };
+    }
+
+    if (!parsedRaw || typeof parsedRaw !== 'object' || Array.isArray(parsedRaw)) {
+      return {
+        data: inMemoryFallback,
+        warning: 'Format data tersimpan di localStorage tidak valid; memuat konfigurasi awal.',
+      };
+    }
+
+    const rec = parsedRaw as Record<string, unknown>;
+    const clean: Partial<PersistedAppData> = {};
+    const resetSections: string[] = [];
+
+    const trySection = <T>(
+      key: keyof PersistedAppData,
+      labelId: string,
+      schema: z.ZodType<T>
+    ) => {
+      if (rec[key] === undefined) return;
+      const checked = schema.safeParse(rec[key]);
+      if (checked.success) {
+        (clean as Record<string, unknown>)[key] = checked.data;
+      } else {
+        resetSections.push(labelId);
+      }
+    };
+
+    trySection('profile', 'Profil Channel', ChannelProfileSchema);
+    trySection('profileConfigured', 'Status Setup', z.boolean());
+    trySection('styleProfiles', 'Profil Gaya', z.array(StyleProfileSchema));
+    trySection('styleReferences', 'Referensi Gaya', z.array(StyleReferenceSchema));
+    trySection('modelConfigs', 'Pengaturan Model', z.array(AgentModelConfigSchema));
+    trySection('knowledge', 'Blok Pengetahuan', z.array(KnowledgeBlockSchema));
+    trySection('history', 'Riwayat Run', z.array(HistoryEntrySchema));
+    trySection('activeRun', 'Run Aktif', PipelineRunSchema.nullable());
+    trySection('lastIdeas', 'Hasil Riset Terakhir', AgentResultSchema);
+    trySection('lastAudit', 'Hasil Audit Terakhir', AgentResultSchema);
+    trySection('lastAnalysis', 'Hasil Analitik Terakhir', AgentResultSchema);
+    trySection('lastExportedAt', 'Waktu Ekspor', z.string());
+    trySection('changesSinceExport', 'Penghitung Perubahan', z.number().int().min(0));
+
+    return {
+      data: clean,
+      warning:
+        resetSections.length > 0
+          ? `Sebagian data lokal rusak dan direset ke bawaan: ${resetSections.join(', ')}.`
+          : undefined,
+    };
   } catch {
     return {
       data: inMemoryFallback,
@@ -163,8 +264,6 @@ export function importAll(
   return { ok: true, file: checked.data };
 }
 
-export function isDirty(data: Pick<PersistedAppData, 'changesSinceExport' | 'lastExportedAt'>): boolean {
-  if (data.changesSinceExport > 0) return true;
-  if (!data.lastExportedAt) return false;
-  return false;
+export function isDirty(data: Pick<PersistedAppData, 'changesSinceExport'>): boolean {
+  return data.changesSinceExport > 0;
 }

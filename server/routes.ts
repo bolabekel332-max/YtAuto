@@ -1,11 +1,10 @@
-import express, { type Express, type NextFunction, type Request, type Response } from 'express';
+import express, { type Express, type Request, type Response } from 'express';
 import {
   AgentRunRequestSchema,
   AgentTestRequestSchema,
   NousDevicePollRequestSchema,
   ProviderTestRequestSchema,
   StyleAnalyzeRequestSchema,
-  type AccessInfo,
   type ApiErrorBody,
   type ProviderTestResponse,
   type ProvidersStatusResponse,
@@ -14,8 +13,12 @@ import type { ProviderId } from '../shared/schemas';
 import { SAMPLE_INPUTS, SAMPLE_PROFILE_FOR_TEST } from '../shared/agentInputs';
 import { schemaIdFor } from '../shared/agentRegistry';
 import { runAgent } from './agentRunner';
-import { accessGate, consumeModelCall, DailyCapError, getDailyCallUsage, rateLimiter } from './auth';
-import { getEnv } from './config';
+import {
+  consumeModelCall,
+  DailyCapError,
+  getDailyCallUsage,
+  rateLimiter,
+} from './auth';
 import { extractSafeErrorLogMeta, logCall } from './logger';
 import {
   disconnectNousOAuth,
@@ -26,11 +29,41 @@ import {
 } from './providers/nousAuth';
 import { fetchOpenRouterModels } from './providers/openrouter';
 import { getProvider, listStatus } from './providers/registry';
-import { ProviderCallError } from './providers/types';
+import { ProviderCallError, sanitizeErrorMessage } from './providers/types';
 import { analyzeReference } from './styleAnalyzer';
 import { AppApiError, validateConfig } from './validation';
 
-function handleRouteError(res: Response, err: unknown): void {
+function bindRequestAbort(req: Request, res: Response): AbortController {
+  const controller = new AbortController();
+  const onClose = () => {
+    if (!res.writableEnded) {
+      controller.abort();
+    }
+  };
+  req.on('aborted', onClose);
+  res.on('close', onClose);
+  return controller;
+}
+
+export function handleRouteError(res: Response, err: unknown): void {
+  if (!(err instanceof AppApiError)) {
+    const safeMsg = sanitizeErrorMessage(err);
+    const errName = err instanceof Error ? err.name : typeof err;
+    console.error(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: 'error',
+        scope: 'api_route',
+        errorName: errName,
+        errorMessage: safeMsg,
+      })
+    );
+  }
+
+  if (res.headersSent || res.writableEnded || res.destroyed) {
+    return;
+  }
+
   if (err instanceof AppApiError) {
     const body: ApiErrorBody = {
       error: {
@@ -67,10 +100,7 @@ function handleRouteError(res: Response, err: unknown): void {
   const body: ApiErrorBody = {
     error: {
       code: 'provider_error',
-      message:
-        err instanceof Error
-          ? `Terjadi gangguan pada server: ${err.message}`
-          : 'Terjadi kesalahan internal pada server.',
+      message: 'Terjadi kesalahan internal pada server.',
     },
   };
   res.status(500).json(body);
@@ -79,17 +109,17 @@ function handleRouteError(res: Response, err: unknown): void {
 export function registerRoutes(app: Express): void {
   const api = express.Router();
 
-  // Urutan pemrosesan wajib (BP 13 / S-03): Rate Limit -> Gerbang Akses -> Validasi -> Eksekusi
-  api.use(rateLimiter);
-  api.use(accessGate);
+  // Pastikan seluruh respons API tidak disimpan di cache proxy/browser
+  api.use((_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
 
-  // Endpoint publik (dikecualikan dari gerbang kode akses)
-  api.get('/access', (_req: Request, res: Response) => {
-    const { appAccessCode } = getEnv();
-    const payload: AccessInfo = {
-      gateEnabled: appAccessCode.length > 0,
-    };
-    res.json(payload);
+  // Urutan pemrosesan: Rate Limit -> Health -> Validasi -> Eksekusi
+  api.use(rateLimiter);
+
+  api.get('/healthz', (_req: Request, res: Response) => {
+    res.json({ ok: true });
   });
 
   api.get('/providers/status', (_req: Request, res: Response) => {
@@ -102,7 +132,8 @@ export function registerRoutes(app: Express): void {
     res.json(payload);
   });
 
-  api.post('/agent/run', async (req: Request, res: Response, _next: NextFunction) => {
+  api.post('/agent/run', async (req: Request, res: Response) => {
+    const ac = bindRequestAbort(req, res);
     try {
       const parsed = AgentRunRequestSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -114,7 +145,7 @@ export function registerRoutes(app: Express): void {
             .join('; ')}`
         );
       }
-      const result = await runAgent(parsed.data);
+      const result = await runAgent(parsed.data, { signal: ac.signal });
       res.json(result);
     } catch (err) {
       handleRouteError(res, err);
@@ -122,6 +153,7 @@ export function registerRoutes(app: Express): void {
   });
 
   api.post('/agent/test', async (req: Request, res: Response) => {
+    const ac = bindRequestAbort(req, res);
     try {
       const parsed = AgentTestRequestSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -138,17 +170,20 @@ export function registerRoutes(app: Express): void {
       const sId = schemaIdFor(agentId, mode);
       const sampleInput = SAMPLE_INPUTS[sId];
 
-      const result = await runAgent({
-        agentId,
-        mode,
-        input: sampleInput,
-        profile: profile ?? SAMPLE_PROFILE_FOR_TEST,
-        knowledge: knowledge ?? [],
-        config: {
-          ...config,
+      const result = await runAgent(
+        {
           agentId,
+          mode,
+          input: sampleInput,
+          profile: profile ?? SAMPLE_PROFILE_FOR_TEST,
+          knowledge: knowledge ?? [],
+          config: {
+            ...config,
+            agentId,
+          },
         },
-      });
+        { signal: ac.signal }
+      );
       res.json(result);
     } catch (err) {
       handleRouteError(res, err);
@@ -164,7 +199,7 @@ export function registerRoutes(app: Express): void {
         throw new AppApiError(
           'invalid_request',
           400,
-          'Payload tes koneksi provider harus berisi providerId dan nama model.'
+          'Payload tes koneksi provider harus berisi providerId dan nama model yang valid.'
         );
       }
 
@@ -289,6 +324,7 @@ export function registerRoutes(app: Express): void {
   });
 
   api.post('/style/analyze', async (req: Request, res: Response) => {
+    const ac = bindRequestAbort(req, res);
     try {
       const parsed = StyleAnalyzeRequestSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -301,11 +337,22 @@ export function registerRoutes(app: Express): void {
         );
       }
 
-      const result = await analyzeReference(parsed.data);
+      const result = await analyzeReference(parsed.data, { signal: ac.signal });
       res.json(result);
     } catch (err) {
       handleRouteError(res, err);
     }
+  });
+
+  // Endpoint /api/* tak dikenal selalu mengembalikan 404 JSON (tidak jatuh ke SPA HTML)
+  api.use((_req: Request, res: Response) => {
+    const payload: ApiErrorBody = {
+      error: {
+        code: 'invalid_request',
+        message: 'Endpoint tidak ditemukan.',
+      },
+    };
+    res.status(404).json(payload);
   });
 
   app.use('/api', api);

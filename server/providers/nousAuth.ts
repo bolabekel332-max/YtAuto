@@ -39,6 +39,7 @@ interface PendingDeviceFlow {
 
 let oauthSession: NousTokenSession | null = null;
 let nousTestedFlag = false;
+let refreshInFlight: Promise<boolean> | null = null;
 const pendingFlows = new Map<string, PendingDeviceFlow>();
 
 function validatePortalUrl(raw: unknown, fallbackPath: string): string {
@@ -173,6 +174,7 @@ export function getNousOAuthStatus(): NousOAuthStatusResponse {
 export function disconnectNousOAuth(): NousOAuthStatusResponse {
   oauthSession = null;
   nousTestedFlag = false;
+  refreshInFlight = null;
   pendingFlows.clear();
   return getNousOAuthStatus();
 }
@@ -419,37 +421,50 @@ export async function pollNousDeviceFlow(
 }
 
 export async function refreshNousAccessToken(fetchFn: typeof fetch = fetch): Promise<boolean> {
-  if (!oauthSession?.refreshToken) {
+  if (refreshInFlight) {
+    return refreshInFlight;
+  }
+
+  const currentRefreshToken = oauthSession?.refreshToken;
+  if (!currentRefreshToken) {
     return false;
   }
 
-  const { nousOauthClientId } = getEnv();
-  const { ok, data } = await fetchJsonWithTimeout(
-    NOUS_TOKEN_URL,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
+  refreshInFlight = (async () => {
+    const { nousOauthClientId } = getEnv();
+    const { ok, data } = await fetchJsonWithTimeout(
+      NOUS_TOKEN_URL,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          grant_type: 'refresh_token',
+          refresh_token: currentRefreshToken,
+          client_id: nousOauthClientId,
+        }),
       },
-      body: JSON.stringify({
-        grant_type: 'refresh_token',
-        refresh_token: oauthSession.refreshToken,
-        client_id: nousOauthClientId,
-      }),
-    },
-    OAUTH_HTTP_TIMEOUT_MS,
-    fetchFn
-  );
+      OAUTH_HTTP_TIMEOUT_MS,
+      fetchFn
+    );
 
-  if (!ok || typeof data.access_token !== 'string') {
-    oauthSession = null;
-    nousTestedFlag = false;
-    return false;
+    if (!ok || typeof data.access_token !== 'string') {
+      oauthSession = null;
+      nousTestedFlag = false;
+      return false;
+    }
+
+    saveTokenResponse(data, currentRefreshToken);
+    return true;
+  })();
+
+  try {
+    return await refreshInFlight;
+  } finally {
+    refreshInFlight = null;
   }
-
-  saveTokenResponse(data, oauthSession.refreshToken);
-  return true;
 }
 
 export async function getNousAccessToken(
@@ -581,6 +596,7 @@ export async function fetchNousModels(
 export function resetNousAuthForTests(): void {
   oauthSession = null;
   nousTestedFlag = false;
+  refreshInFlight = null;
   pendingFlows.clear();
 }
 

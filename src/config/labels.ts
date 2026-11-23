@@ -86,11 +86,9 @@ export const LABELS: Record<string, string> = {
   // ApiErrorCode
   invalid_request: 'Permintaan Tidak Valid',
   capability_missing: 'Kemampuan Provider Tidak Tersedia',
-  unauthorized: 'Kode Akses Diperlukan / Salah',
   payload_too_large: 'Ukuran Data Terlalu Besar',
   rate_limited: 'Batas Kecepatan Permintaan Tercapai',
   daily_cap: 'Batas Panggilan Harian Tercapai',
-  auth_locked: 'Akses Dikunci Sementara',
   provider_error: 'Gangguan Provider AI',
   output_invalid: 'Format Output Tidak Sesuai Skema',
   output_truncated: 'Output Model Terpotong',

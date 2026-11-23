@@ -1,6 +1,8 @@
 import type { ProviderModelItem, ProviderModelsResponse } from '../../shared/api';
 import { getEnv } from '../config';
 import {
+  combineAbortSignals,
+  parseRetryAfterMs,
   ProviderCallError,
   sanitizeErrorMessage,
   type LLMProvider,
@@ -140,8 +142,14 @@ export const openrouterProvider: LLMProvider = {
       payload.response_format = { type: 'json_object' };
     }
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), req.timeoutMs);
+    if (req.signal?.aborted) {
+      throw new ProviderCallError('timeout', 499, 'Permintaan ke OpenRouter dibatalkan.', false, {
+        errorKind: 'local_timeout',
+        errorName: 'AbortError',
+      });
+    }
+
+    const { signal, cleanup, isCallerAborted } = combineAbortSignals(req.signal, req.timeoutMs);
 
     try {
       const res = await fetch(OPENROUTER_CHAT_URL, {
@@ -151,15 +159,40 @@ export const openrouterProvider: LLMProvider = {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(payload),
-        signal: controller.signal,
+        signal,
       });
+
+      if (res.status === 401) {
+        throw new ProviderCallError(
+          'provider_error',
+          502,
+          'Autentikasi OpenRouter gagal (401). Periksa OPENROUTER_API_KEY di panel Secrets server.',
+          false,
+          { errorKind: 'authentication_error', upstreamStatus: 401 }
+        );
+      }
+
+      if (res.status === 403) {
+        throw new ProviderCallError(
+          'provider_error',
+          502,
+          'Izin akses OpenRouter ditolak (403). Periksa hak akses kunci OPENROUTER_API_KEY.',
+          false,
+          { errorKind: 'permission_error', upstreamStatus: 403 }
+        );
+      }
 
       if (res.status === 429) {
         throw new ProviderCallError(
           'provider_error',
           429,
           'OpenRouter mengembalikan HTTP 429 (batas permintaan tercapai).',
-          true
+          true,
+          {
+            errorKind: 'rate_limit',
+            upstreamStatus: 429,
+            retryAfterMs: parseRetryAfterMs(res.headers.get('retry-after')),
+          }
         );
       }
 
@@ -168,7 +201,8 @@ export const openrouterProvider: LLMProvider = {
           'provider_error',
           502,
           `OpenRouter mengalami error server (HTTP ${res.status}).`,
-          true
+          true,
+          { errorKind: 'upstream_internal_error', upstreamStatus: res.status }
         );
       }
 
@@ -207,6 +241,12 @@ export const openrouterProvider: LLMProvider = {
       };
     } catch (err) {
       if (err instanceof ProviderCallError) throw err;
+      if (isCallerAborted()) {
+        throw new ProviderCallError('timeout', 499, 'Permintaan ke OpenRouter dibatalkan.', false, {
+          errorKind: 'local_timeout',
+          errorName: 'AbortError',
+        });
+      }
       if (err instanceof Error && err.name === 'AbortError') {
         throw new ProviderCallError(
           'timeout',
@@ -222,7 +262,7 @@ export const openrouterProvider: LLMProvider = {
         false
       );
     } finally {
-      clearTimeout(timer);
+      cleanup();
     }
   },
 

@@ -18,29 +18,47 @@ export const Knowledge: React.FC = () => {
   const { state, dispatch } = useStore();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<KnowledgeBlock | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
 
   const todayStr = new Date().toISOString().slice(0, 10);
 
   const startEdit = (block: KnowledgeBlock) => {
     setEditingId(block.id);
     setDraft({ ...block });
+    setEditError(null);
   };
 
   const saveEdit = () => {
     if (!draft) return;
+    const trimmedTitle = draft.title.trim();
+    const trimmedContent = draft.content.trim();
+    const trimmedDate = draft.verifiedAt.trim();
+    if (!trimmedTitle) {
+      setEditError('Judul blok pengetahuan tidak boleh kosong.');
+      return;
+    }
+    if (!trimmedContent) {
+      setEditError('Isi aturan blok pengetahuan tidak boleh kosong.');
+      return;
+    }
+    if (!trimmedDate) {
+      setEditError('Tanggal verifikasi wajib diisi.');
+      return;
+    }
     dispatch({
       type: 'UPDATE_KNOWLEDGE_BLOCK',
       id: draft.id,
       patch: {
-        title: draft.title.trim() || 'Blok Pengetahuan',
-        content: draft.content.trim(),
+        title: trimmedTitle,
+        content: trimmedContent,
         note: draft.note?.trim() || undefined,
         certainty: draft.certainty,
-        verifiedAt: draft.verifiedAt,
+        verifiedAt: trimmedDate,
       },
     });
     setEditingId(null);
     setDraft(null);
+    setEditError(null);
   };
 
   const markVerifiedToday = (id: string) => {
@@ -138,6 +156,7 @@ export const Knowledge: React.FC = () => {
                         <label className="block text-xs text-slate-300 mb-1">Judul</label>
                         <input
                           type="text"
+                          maxLength={200}
                           value={draft.title}
                           onChange={(e) => setDraft({ ...draft, title: e.target.value })}
                           className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-100"
@@ -170,6 +189,7 @@ export const Knowledge: React.FC = () => {
                         </label>
                         <input
                           type="date"
+                          maxLength={32}
                           value={draft.verifiedAt}
                           onChange={(e) =>
                             setDraft({ ...draft, verifiedAt: e.target.value })
@@ -183,6 +203,7 @@ export const Knowledge: React.FC = () => {
                       <label className="block text-xs text-slate-300 mb-1">Isi Aturan</label>
                       <textarea
                         rows={4}
+                        maxLength={4000}
                         value={draft.content}
                         onChange={(e) => setDraft({ ...draft, content: e.target.value })}
                         className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs leading-relaxed text-slate-100"
@@ -195,11 +216,21 @@ export const Knowledge: React.FC = () => {
                       </label>
                       <input
                         type="text"
+                        maxLength={1000}
                         value={draft.note ?? ''}
                         onChange={(e) => setDraft({ ...draft, note: e.target.value })}
                         className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-100"
                       />
                     </div>
+
+                    {editError && (
+                      <div
+                        role="alert"
+                        className="rounded-lg border border-rose-500/40 bg-rose-950/60 px-3 py-2 text-xs text-rose-200"
+                      >
+                        {editError}
+                      </div>
+                    )}
 
                     <div className="flex justify-end gap-2">
                       <button
@@ -207,6 +238,7 @@ export const Knowledge: React.FC = () => {
                         onClick={() => {
                           setEditingId(null);
                           setDraft(null);
+                          setEditError(null);
                         }}
                         className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700"
                       >

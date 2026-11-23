@@ -2,6 +2,7 @@ import React from 'react';
 import { Calendar, Compass, ExternalLink, Layers, Lightbulb, Sparkles } from 'lucide-react';
 import type { ResearcherOutput } from '../../../shared/agentSchemas';
 import { label } from '../../config/labels';
+import { safeExternalUrl } from '../../utils/safeUrl';
 import { CopyButton } from '../components/CopyButton';
 import { Tooltip } from '../components/Tooltip';
 
@@ -212,19 +213,26 @@ export const ResearchView: React.FC<ResearchViewProps> = ({ data, onSelectIdeaFo
             />
           </div>
           <ul className="space-y-1.5 text-xs">
-            {sources.map((src, idx) => (
-              <li key={`${src.url}-${idx}`} className="flex items-start gap-2">
-                <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-400" aria-hidden="true" />
-                <a
-                  href={src.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sky-300 hover:text-sky-200 underline break-all"
-                >
-                  {src.title || src.url}
-                </a>
-              </li>
-            ))}
+            {sources.map((src, idx) => {
+              const safeHref = safeExternalUrl(src.url);
+              return (
+                <li key={`${src.url}-${idx}`} className="flex items-start gap-2">
+                  <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-400" aria-hidden="true" />
+                  {safeHref ? (
+                    <a
+                      href={safeHref}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-sky-300 hover:text-sky-200 underline break-all"
+                    >
+                      {src.title || src.url}
+                    </a>
+                  ) : (
+                    <span className="text-slate-300 break-all">{src.title || src.url}</span>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}

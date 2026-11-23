@@ -7,7 +7,9 @@ import {
   JSON_MODES,
   KNOWLEDGE_GROUPS,
   MAX_FALLBACKS,
+  MAX_PASTE_CHARS,
   MAX_TOKENS_LIMIT,
+  MODEL_ID_REGEX,
   PIPELINE_STEP_IDS,
   PLATFORMS,
   PROVIDER_IDS,
@@ -43,54 +45,69 @@ export type CertaintyLevel = z.infer<typeof CertaintyLevelSchema>;
 export const KnowledgeGroupSchema = z.enum(KNOWLEDGE_GROUPS);
 export type KnowledgeGroup = z.infer<typeof KnowledgeGroupSchema>;
 
-export const ChannelProfileSchema = z.object({
-  niche: z.string().min(1),
-  customNiche: z.string().optional(),
-  sensitiveNiche: z.boolean(),
-  audience: z.object({
-    ageRange: z.string().min(1),
-    customAgeRange: z.string().optional(),
-    interests: z.array(z.string().min(1)).min(1),
-    customInterests: z.string().optional(),
-    level: z.string().min(1),
-    customLevel: z.string().optional(),
-  }),
-  language: z.string().min(1),
-  customLanguage: z.string().optional(),
-  tone: z.string().min(1),
-  customTone: z.string().optional(),
-  platforms: z.array(PlatformSchema).min(1),
-  customPlatformNote: z.string().optional(),
-  postingFrequency: z.string().min(1),
-  customPostingFrequency: z.string().optional(),
-  targetDuration: z.string().min(1),
-  customTargetDuration: z.string().optional(),
-  voiceType: z.string().min(1),
-  customVoiceType: z.string().optional(),
-  visualStyle: z.object({
-    mode: z.enum(['template', 'reference']),
-    template: z.string().optional(),
-    customTemplate: z.string().optional(),
-    defaultStyleProfileId: z.string().optional(),
-  }),
-});
+export const ChannelProfileSchema = z.preprocess(
+  (val) => {
+    if (val && typeof val === 'object') {
+      const obj = { ...(val as Record<string, unknown>) };
+      if (!obj.platform && Array.isArray(obj.platforms) && obj.platforms.length > 0) {
+        obj.platform = obj.platforms[0];
+      }
+      if (!obj.platform) {
+        obj.platform = 'youtube_shorts';
+      }
+      return obj;
+    }
+    return val;
+  },
+  z.object({
+    niche: z.string().min(1).max(500),
+    customNiche: z.string().max(500).optional(),
+    sensitiveNiche: z.boolean(),
+    audience: z.object({
+      ageRange: z.string().min(1).max(500),
+      customAgeRange: z.string().max(500).optional(),
+      interests: z.array(z.string().min(1).max(500)).min(1).max(20),
+      customInterests: z.string().max(500).optional(),
+      level: z.string().min(1).max(500),
+      customLevel: z.string().max(500).optional(),
+    }),
+    language: z.string().min(1).max(500),
+    customLanguage: z.string().max(500).optional(),
+    tone: z.string().min(1).max(500),
+    customTone: z.string().max(500).optional(),
+    platform: PlatformSchema,
+    customPlatformNote: z.string().max(500).optional(),
+    postingFrequency: z.string().min(1).max(500),
+    customPostingFrequency: z.string().max(500).optional(),
+    targetDuration: z.string().min(1).max(500),
+    customTargetDuration: z.string().max(500).optional(),
+    voiceType: z.string().min(1).max(500),
+    customVoiceType: z.string().max(500).optional(),
+    visualStyle: z.object({
+      mode: z.enum(['template', 'reference']),
+      template: z.string().max(500).optional(),
+      customTemplate: z.string().max(500).optional(),
+      defaultStyleProfileId: z.string().max(200).optional(),
+    }),
+  })
+);
 export type ChannelProfile = z.infer<typeof ChannelProfileSchema>;
 
 export const RunInputSchema = z.object({
-  topic: z.string().min(1),
+  topic: z.string().min(1).max(MAX_PASTE_CHARS),
   targetPlatform: PlatformSchema,
   includeResearch: z.boolean(),
-  styleProfileId: z.string().optional(),
+  styleProfileId: z.string().max(200).optional(),
 });
 export type RunInput = z.infer<typeof RunInputSchema>;
 
 export const KnowledgeBlockSchema = z.object({
-  id: z.string().min(1),
+  id: z.string().min(1).max(64),
   group: KnowledgeGroupSchema,
-  title: z.string().min(1),
-  content: z.string().min(1),
-  verifiedAt: z.string().min(1),
-  note: z.string().optional(),
+  title: z.string().min(1).max(200),
+  content: z.string().min(1).max(4000),
+  verifiedAt: z.string().min(1).max(32),
+  note: z.string().max(1000).optional(),
   certainty: CertaintyLevelSchema,
 });
 export type KnowledgeBlock = z.infer<typeof KnowledgeBlockSchema>;
@@ -98,8 +115,20 @@ export type KnowledgeBlock = z.infer<typeof KnowledgeBlockSchema>;
 export const AgentModelConfigSchema = z.object({
   agentId: AgentIdSchema,
   providerId: ProviderIdSchema,
-  model: z.string().min(1),
-  fallbackModels: z.array(z.string().min(1)).max(MAX_FALLBACKS),
+  model: z
+    .string()
+    .min(1)
+    .max(120)
+    .regex(MODEL_ID_REGEX, 'ID model hanya boleh berisi huruf, angka, titik, garis bawah, titik dua, garis miring, dan tanda hubung.'),
+  fallbackModels: z
+    .array(
+      z
+        .string()
+        .min(1)
+        .max(120)
+        .regex(MODEL_ID_REGEX, 'ID model cadangan mengandung karakter tidak valid.')
+    )
+    .max(MAX_FALLBACKS),
   temperature: z.number().min(0).max(2).nullable(),
   maxTokens: z.number().int().min(128).max(MAX_TOKENS_LIMIT),
   timeoutMs: z.number().int().min(1000).max(TIMEOUT_LIMIT_MS),
@@ -121,10 +150,10 @@ export const StyleReferenceStatusSchema = z.enum(['new', 'analyzed', 'failed']);
 export type StyleReferenceStatus = z.infer<typeof StyleReferenceStatusSchema>;
 
 export const StyleReferenceSchema = z.object({
-  id: z.string().min(1),
+  id: z.string().min(1).max(120),
   type: StyleReferenceTypeSchema,
-  source: z.string().min(1),
-  note: z.string().optional(),
+  source: z.string().min(1).max(2000),
+  note: z.string().max(1000).optional(),
   status: StyleReferenceStatusSchema,
 });
 export type StyleReference = z.infer<typeof StyleReferenceSchema>;
@@ -150,53 +179,58 @@ export type StyleAttribute<T> = {
 };
 
 export const RhythmValueSchema = z.object({
-  pattern: z.string(),
+  pattern: z.string().max(2000),
   avgShotSec: z.number().nullable().optional(),
   cutsPerMin: z.number().nullable().optional(),
 });
 
 export const ColorValueSchema = z.object({
-  mood: z.string(),
-  dominantColors: z.array(z.string()),
+  mood: z.string().max(2000),
+  dominantColors: z.array(z.string().max(64)).max(20),
 });
 
 export const StyleAttributesSchema = z.object({
   rhythm: createStyleAttributeSchema(RhythmValueSchema),
-  hookVisual: createStyleAttributeSchema(z.string()),
+  hookVisual: createStyleAttributeSchema(z.string().max(2000)),
   color: createStyleAttributeSchema(ColorValueSchema),
-  onScreenText: createStyleAttributeSchema(z.string()),
-  subtitle: createStyleAttributeSchema(z.string()),
-  assets: createStyleAttributeSchema(z.string()),
-  composition: createStyleAttributeSchema(z.string()),
-  transitions: createStyleAttributeSchema(z.string()),
-  audio: createStyleAttributeSchema(z.string()),
-  thumbnail: createStyleAttributeSchema(z.string()),
+  onScreenText: createStyleAttributeSchema(z.string().max(2000)),
+  subtitle: createStyleAttributeSchema(z.string().max(2000)),
+  assets: createStyleAttributeSchema(z.string().max(2000)),
+  composition: createStyleAttributeSchema(z.string().max(2000)),
+  transitions: createStyleAttributeSchema(z.string().max(2000)),
+  audio: createStyleAttributeSchema(z.string().max(2000)),
+  thumbnail: createStyleAttributeSchema(z.string().max(2000)),
 });
 export type StyleAttributes = z.infer<typeof StyleAttributesSchema>;
 
 export const StyleProfileSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  referenceIds: z.array(z.string()),
-  weights: z.record(z.string(), z.number().min(0)),
+  id: z.string().min(1).max(200),
+  name: z.string().min(1).max(200),
+  referenceIds: z.array(z.string().max(200)).max(20),
+  /**
+   * Peta bobot kontribusi profil/referensi sumber:
+   * - Untuk profil tunggal hasil analisis: key = `referenceId` sumber, value = `1`.
+   * - Untuk profil hasil `mergeProfiles`: key = `profile.id` setiap sumber, value = bobot ternormalisasi `0..1` (dibulatkan 3 desimal).
+   */
+  weights: z.record(z.string().max(200), z.number().min(0)),
   attributes: StyleAttributesSchema,
   edited: z.boolean(),
-  selectedSources: z.record(z.string(), z.string()).optional(),
-  ignoredAttributes: z.array(z.string()).optional(),
+  selectedSources: z.record(z.string().max(100), z.string().max(500)).optional(),
+  ignoredAttributes: z.array(z.string().max(64)).max(20).optional(),
 });
 export type StyleProfile = z.infer<typeof StyleProfileSchema>;
 
 export const SourceRefSchema = z.object({
-  title: z.string(),
-  url: z.string(),
+  title: z.string().max(500),
+  url: z.string().max(2000),
 });
 export type SourceRef = z.infer<typeof SourceRefSchema>;
 
 export const AgentResultSchema = z.object({
   agentId: AgentIdSchema,
   output: z.unknown(),
-  sources: z.array(SourceRefSchema).optional(),
-  model: z.string(),
+  sources: z.array(SourceRefSchema).max(100).optional(),
+  model: z.string().max(120),
   providerId: ProviderIdSchema.optional(),
   isMock: z.boolean().optional(),
   latencyMs: z.number(),
@@ -210,15 +244,15 @@ export type IssueSeverity = z.infer<typeof IssueSeveritySchema>;
 export const ComplianceIssueSchema = z.object({
   severity: IssueSeveritySchema,
   relatedAgent: RevisableAgentIdSchema,
-  problem: z.string(),
-  fix: z.string(),
+  problem: z.string().max(4000),
+  fix: z.string().max(4000),
 });
 export type ComplianceIssue = z.infer<typeof ComplianceIssueSchema>;
 
 export const SimilarityRiskSchema = z.object({
-  referenceId: z.string(),
+  referenceId: z.string().max(200),
   level: z.enum(['low', 'medium', 'high']),
-  reason: z.string(),
+  reason: z.string().max(2000),
 });
 export type SimilarityRisk = z.infer<typeof SimilarityRiskSchema>;
 
@@ -227,9 +261,9 @@ export type VerdictType = z.infer<typeof VerdictTypeSchema>;
 
 export const ComplianceVerdictSchema = z.object({
   verdict: VerdictTypeSchema,
-  issues: z.array(ComplianceIssueSchema),
-  similarityRisks: z.array(SimilarityRiskSchema).optional(),
-  notes: z.string(),
+  issues: z.array(ComplianceIssueSchema).max(30),
+  similarityRisks: z.array(SimilarityRiskSchema).max(20).optional(),
+  notes: z.string().max(4000),
 });
 export type ComplianceVerdict = z.infer<typeof ComplianceVerdictSchema>;
 
@@ -239,7 +273,7 @@ export type StepStatus = z.infer<typeof StepStatusSchema>;
 export const StepStateSchema = z.object({
   status: StepStatusSchema,
   result: AgentResultSchema.optional(),
-  error: z.string().optional(),
+  error: z.string().max(2000).optional(),
 });
 export type StepState = z.infer<typeof StepStateSchema>;
 
@@ -263,18 +297,18 @@ export const PipelineStepsRecordSchema = z.object({
 export type PipelineStepsRecord = z.infer<typeof PipelineStepsRecordSchema>;
 
 export const PipelineRunSchema = z.object({
-  id: z.string().min(1),
+  id: z.string().min(1).max(200),
   input: RunInputSchema,
   steps: PipelineStepsRecordSchema,
   round: z.union([z.literal(0), z.literal(1), z.literal(2)]),
-  complianceRounds: z.array(ComplianceVerdictSchema),
+  complianceRounds: z.array(ComplianceVerdictSchema).max(10),
   status: PipelineRunStatusSchema,
 });
 export type PipelineRun = z.infer<typeof PipelineRunSchema>;
 
 export const HistoryEntrySchema = z.object({
-  id: z.string().min(1),
-  createdAt: z.string().min(1),
+  id: z.string().min(1).max(200),
+  createdAt: z.string().min(1).max(64),
   input: RunInputSchema,
   run: PipelineRunSchema,
   selection: z.object({
@@ -288,19 +322,30 @@ export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 
 export const RevisionFeedbackSchema = z.object({
   round: z.union([z.literal(1), z.literal(2)]),
-  issues: z.array(ComplianceIssueSchema),
-  previousOutput: z.unknown(),
+  issues: z.array(ComplianceIssueSchema).max(20),
+  previousOutput: z.unknown().refine(
+    (val) => {
+      if (val === undefined) return true;
+      try {
+        const serialized = JSON.stringify(val);
+        return typeof serialized === 'string' && serialized.length <= 60_000;
+      } catch {
+        return false;
+      }
+    },
+    { message: 'previousOutput melebihi batas maksimal 60.000 karakter JSON.' }
+  ),
 });
 export type RevisionFeedback = z.infer<typeof RevisionFeedbackSchema>;
 
 export const ExportFileSchema = z.object({
   schemaVersion: z.literal(EXPORT_SCHEMA_VERSION),
-  exportedAt: z.string().min(1),
+  exportedAt: z.string().min(1).max(64),
   profile: ChannelProfileSchema,
-  styleProfiles: z.array(StyleProfileSchema),
-  styleReferences: z.array(StyleReferenceSchema),
-  modelConfigs: z.array(AgentModelConfigSchema),
-  knowledge: z.array(KnowledgeBlockSchema),
+  styleProfiles: z.array(StyleProfileSchema).max(30),
+  styleReferences: z.array(StyleReferenceSchema).max(30),
+  modelConfigs: z.array(AgentModelConfigSchema).max(20),
+  knowledge: z.array(KnowledgeBlockSchema).max(32),
   history: z.array(HistoryEntrySchema).max(HISTORY_MAX),
   lastIdeas: AgentResultSchema.optional(),
   lastAudit: AgentResultSchema.optional(),
