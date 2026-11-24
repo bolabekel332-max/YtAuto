@@ -5,7 +5,6 @@ import {
   PlatformSchema,
   RevisableAgentIdSchema,
   SimilarityRiskSchema,
-  SourceRefSchema,
   StyleAttributesSchema,
   VerdictTypeSchema,
 } from './schemas';
@@ -59,7 +58,6 @@ export const researcherOut = z.object({
       platform: PlatformSchema,
     })
   ),
-  sources: z.array(SourceRefSchema).optional(),
 });
 export type ResearcherOutput = z.infer<typeof researcherOut>;
 
@@ -122,7 +120,6 @@ export const complianceOut = z
     ),
     similarityRisks: z.array(SimilarityRiskSchema).optional(),
     notes: z.string(),
-    sources: z.array(SourceRefSchema).optional(),
   })
   .superRefine((val, ctx) => {
     if (val.verdict === 'reject' && !val.issues.some((i) => i.severity === 'high')) {

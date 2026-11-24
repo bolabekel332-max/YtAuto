@@ -12,6 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import type { ScreenId } from '../../state/store';
+import { usePipeline } from '../../state/pipelineContext';
 import { useStore } from '../../state/store';
 import { Banner } from './Banner';
 import { Header } from './Header';
@@ -89,7 +90,8 @@ export interface AppShellProps {
 }
 
 export const AppShell: React.FC<AppShellProps> = ({ children }) => {
-  const { state, dispatch } = useStore();
+  const { state, dispatch, reloadFromStorage } = useStore();
+  const { isBusy } = usePipeline();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const activeNav = NAV_ITEMS.find((n) => n.id === state.currentScreen) ?? NAV_ITEMS[0];
@@ -214,12 +216,42 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
             />
           )}
 
+          {isBusy && state.currentScreen !== 'studio' && (
+            <Banner
+              tone="info"
+              title="Pipeline Studio Video Sedang Berjalan"
+              message="Proses pembuatan paket video tetap aktif di latar belakang saat Anda meninjau halaman lain."
+              action={
+                <button
+                  type="button"
+                  onClick={() => handleNavigate('studio')}
+                  className="rounded-md bg-sky-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-400"
+                >
+                  Lihat Studio Video
+                </button>
+              }
+            />
+          )}
+
           {state.storageWarning && (
             <Banner
               tone="warning"
               title="Peringatan Penyimpanan Browser"
               message={state.storageWarning}
-              onDismiss={() => dispatch({ type: 'SET_STORAGE_WARNING', warning: undefined })}
+              action={
+                state.storageConflict ? (
+                  <button
+                    type="button"
+                    onClick={reloadFromStorage}
+                    className="rounded-md bg-amber-400 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-amber-300"
+                  >
+                    Muat Data Tab Terbaru
+                  </button>
+                ) : undefined
+              }
+              onDismiss={() =>
+                dispatch({ type: 'SET_STORAGE_WARNING', warning: undefined, conflict: false })
+              }
             />
           )}
 

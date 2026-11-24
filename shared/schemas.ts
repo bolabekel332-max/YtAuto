@@ -102,11 +102,20 @@ export const RunInputSchema = z.object({
 export type RunInput = z.infer<typeof RunInputSchema>;
 
 export const KnowledgeBlockSchema = z.object({
-  id: z.string().min(1).max(64),
+  id: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(
+      /^[A-Za-z0-9_-]{1,64}$/,
+      'ID blok pengetahuan hanya boleh berisi huruf, angka, garis bawah, dan tanda hubung.'
+    ),
   group: KnowledgeGroupSchema,
   title: z.string().min(1).max(200),
   content: z.string().min(1).max(4000),
-  verifiedAt: z.string().min(1).max(32),
+  verifiedAt: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Tanggal verifikasi wajib berformat YYYY-MM-DD.'),
   note: z.string().max(1000).optional(),
   certainty: CertaintyLevelSchema,
 });
@@ -230,6 +239,10 @@ export const AgentResultSchema = z.object({
   agentId: AgentIdSchema,
   output: z.unknown(),
   sources: z.array(SourceRefSchema).max(100).optional(),
+  searchUsed: z.boolean().optional(),
+  groundedSourceCount: z.number().int().min(0).optional(),
+  fallbackUsed: z.boolean().optional(),
+  requestedModel: z.string().max(120).optional(),
   model: z.string().max(120),
   providerId: ProviderIdSchema.optional(),
   isMock: z.boolean().optional(),
@@ -267,6 +280,24 @@ export const ComplianceVerdictSchema = z.object({
 });
 export type ComplianceVerdict = z.infer<typeof ComplianceVerdictSchema>;
 
+export function normalizeComplianceVerdict(verdict: ComplianceVerdict): ComplianceVerdict {
+  return {
+    verdict: verdict.verdict,
+    issues: verdict.issues.slice(0, 30).map((issue) => ({
+      severity: issue.severity,
+      relatedAgent: issue.relatedAgent,
+      problem: issue.problem.slice(0, 4000),
+      fix: issue.fix.slice(0, 4000),
+    })),
+    similarityRisks: verdict.similarityRisks?.slice(0, 20).map((risk) => ({
+      referenceId: risk.referenceId.slice(0, 200),
+      level: risk.level,
+      reason: risk.reason.slice(0, 2000),
+    })),
+    notes: verdict.notes.slice(0, 4000),
+  };
+}
+
 export const StepStatusSchema = z.enum(['idle', 'running', 'done', 'failed', 'skipped']);
 export type StepStatus = z.infer<typeof StepStatusSchema>;
 
@@ -296,12 +327,21 @@ export const PipelineStepsRecordSchema = z.object({
 });
 export type PipelineStepsRecord = z.infer<typeof PipelineStepsRecordSchema>;
 
+export const PendingRevisionSchema = z.object({
+  round: z.union([z.literal(1), z.literal(2)]),
+  remainingAgents: z.array(RevisableAgentIdSchema).max(5),
+  issues: z.array(ComplianceIssueSchema).max(30),
+  previousOutputs: z.record(z.string().max(32), z.unknown()),
+});
+export type PendingRevision = z.infer<typeof PendingRevisionSchema>;
+
 export const PipelineRunSchema = z.object({
   id: z.string().min(1).max(200),
   input: RunInputSchema,
   steps: PipelineStepsRecordSchema,
   round: z.union([z.literal(0), z.literal(1), z.literal(2)]),
   complianceRounds: z.array(ComplianceVerdictSchema).max(10),
+  pendingRevision: PendingRevisionSchema.optional(),
   status: PipelineRunStatusSchema,
 });
 export type PipelineRun = z.infer<typeof PipelineRunSchema>;

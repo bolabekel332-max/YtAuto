@@ -1,7 +1,8 @@
-import { PROVIDER_IDS } from '../shared/constants';
+import { MAX_TOKENS_LIMIT, PROVIDER_IDS } from '../shared/constants';
 import type { ProviderId } from '../shared/schemas';
 
 export interface ServerEnv {
+  host: string;
   port: number;
   geminiApiKey: string;
   openrouterApiKey: string;
@@ -10,6 +11,8 @@ export interface ServerEnv {
   customApiKey: string;
   rateLimitPerMin: number;
   dailyCallCap: number;
+  dailyTokenCap: number;
+  serverMaxTokensCap: number;
   bodyLimitMb: number;
   nodeEnv: string;
   isProd: boolean;
@@ -63,8 +66,13 @@ export function getEnv(): ServerEnv {
     .split(',')
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
+  const rawMaxTokensCap = parsePositiveInt(
+    process.env.SERVER_MAX_TOKENS_CAP,
+    MAX_TOKENS_LIMIT
+  );
 
   return {
+    host: (process.env.HOST ?? '').trim() || '127.0.0.1',
     port: parsePositiveInt(process.env.PORT, 3000),
     geminiApiKey: (process.env.GEMINI_API_KEY ?? '').trim(),
     openrouterApiKey: (process.env.OPENROUTER_API_KEY ?? '').trim(),
@@ -73,6 +81,8 @@ export function getEnv(): ServerEnv {
     customApiKey: (process.env.CUSTOM_API_KEY ?? '').trim(),
     rateLimitPerMin: parsePositiveInt(process.env.RATE_LIMIT_PER_MIN, 20),
     dailyCallCap: parsePositiveInt(process.env.DAILY_CALL_CAP, 300),
+    dailyTokenCap: parsePositiveInt(process.env.DAILY_TOKEN_CAP, 2_000_000),
+    serverMaxTokensCap: Math.min(MAX_TOKENS_LIMIT, rawMaxTokensCap),
     bodyLimitMb: parsePositiveInt(process.env.BODY_LIMIT_MB, 10),
     nodeEnv,
     isProd: isProdMode(nodeEnv, process.argv),

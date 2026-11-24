@@ -69,7 +69,7 @@ export function extractSafeErrorLogMeta(
 /**
  * Pencatat aman (P-9 / S-09):
  * Hanya mencatat metadata panggilan (agentId, providerId, status, latensi, token, serta metadata error tersanitasi).
- * Tidak pernah mencatat prompt, input pengguna, respons model mentah, media, kunci API, Authorization header, atau kode akses.
+ * Tidak pernah mencatat prompt, input pengguna, respons model mentah, media, kunci API, token OAuth, atau Authorization header.
  */
 export function logCall(meta: CallLogMeta): void {
   const entry: Record<string, unknown> = {

@@ -1,8 +1,7 @@
 import React from 'react';
-import { Calendar, Compass, ExternalLink, Layers, Lightbulb, Sparkles } from 'lucide-react';
+import { Calendar, Compass, Layers, Lightbulb, Sparkles } from 'lucide-react';
 import type { ResearcherOutput } from '../../../shared/agentSchemas';
 import { label } from '../../config/labels';
-import { safeExternalUrl } from '../../utils/safeUrl';
 import { CopyButton } from '../components/CopyButton';
 import { Tooltip } from '../components/Tooltip';
 
@@ -16,13 +15,14 @@ export const ResearchView: React.FC<ResearchViewProps> = ({ data, onSelectIdeaFo
   const series = data.series ?? [];
   const ideas = data.ideas ?? [];
   const calendar = data.calendar ?? [];
-  const sources = data.sources ?? [];
 
   const copySummary = [
     `Peta Niche:\n${data.nicheMap}`,
     '',
     'Ide Teratas:',
     ...ideas.map((idea, idx) => `${idx + 1}. [${idea.score}/100] ${idea.title} — ${idea.reason}`),
+    '',
+    'Catatan: Skor ide (0-100) merupakan estimasi model AI, bukan data performa nyata.',
   ].join('\n');
 
   return (
@@ -200,42 +200,6 @@ export const ResearchView: React.FC<ResearchViewProps> = ({ data, onSelectIdeaFo
         </div>
       )}
 
-      {/* Sumber Riset Nyata */}
-      {sources.length > 0 && (
-        <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4 space-y-2">
-          <div className="flex items-center gap-2">
-            <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-300">
-              Sumber Grounding Pencarian ({sources.length})
-            </h4>
-            <Tooltip
-              text="Daftar tautan nyata yang dikembalikan langsung oleh mesin pencarian server (tidak dikarang)."
-              label="Panduan Sumber Pencarian"
-            />
-          </div>
-          <ul className="space-y-1.5 text-xs">
-            {sources.map((src, idx) => {
-              const safeHref = safeExternalUrl(src.url);
-              return (
-                <li key={`${src.url}-${idx}`} className="flex items-start gap-2">
-                  <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-400" aria-hidden="true" />
-                  {safeHref ? (
-                    <a
-                      href={safeHref}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-sky-300 hover:text-sky-200 underline break-all"
-                    >
-                      {src.title || src.url}
-                    </a>
-                  ) : (
-                    <span className="text-slate-300 break-all">{src.title || src.url}</span>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
     </div>
   );
 };

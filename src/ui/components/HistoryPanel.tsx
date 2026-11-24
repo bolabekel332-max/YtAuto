@@ -9,6 +9,7 @@ import { Tooltip } from './Tooltip';
 export interface HistoryPanelProps {
   entries: HistoryEntry[];
   activeRunId?: string;
+  disabled?: boolean;
   onOpenEntry: (entry: HistoryEntry) => void;
   onDuplicateEntry: (entry: HistoryEntry) => void;
   onDeleteEntry?: (id: string) => void;
@@ -17,6 +18,7 @@ export interface HistoryPanelProps {
 export const HistoryPanel: React.FC<HistoryPanelProps> = ({
   entries,
   activeRunId,
+  disabled = false,
   onOpenEntry,
   onDuplicateEntry,
   onDeleteEntry,
@@ -89,32 +91,35 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
                 <div className="mt-2.5 flex flex-wrap items-center gap-2">
                   <button
                     type="button"
+                    disabled={disabled}
                     onClick={() => onOpenEntry(entry)}
-                    className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs font-medium text-slate-200 hover:bg-slate-800"
+                    className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <FolderOpen className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
                     <span>Buka Ulang</span>
                   </button>
                   <button
                     type="button"
+                    disabled={disabled}
                     onClick={() => onDuplicateEntry(entry)}
-                    className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs font-medium text-slate-200 hover:bg-slate-800"
+                    className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <CopyPlus className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
                     <span>Duplikasi</span>
                   </button>
-                  {onDeleteEntry && !isConfirming && (
+                  {onDeleteEntry && (!isConfirming || disabled) && (
                     <button
                       type="button"
+                      disabled={disabled}
                       aria-label={`Hapus riwayat ${chosenTitle}`}
                       onClick={() => setConfirmId(entry.id)}
-                      className="ml-auto inline-flex items-center gap-1 rounded-md border border-slate-800 bg-slate-900 px-2 py-1 text-xs text-slate-400 hover:border-rose-500/40 hover:text-rose-300"
+                      className="ml-auto inline-flex items-center gap-1 rounded-md border border-slate-800 bg-slate-900 px-2 py-1 text-xs text-slate-400 hover:border-rose-500/40 hover:text-rose-300 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
                       <span>Hapus</span>
                     </button>
                   )}
-                  {onDeleteEntry && isConfirming && (
+                  {onDeleteEntry && isConfirming && !disabled && (
                     <div className="ml-auto flex items-center gap-1.5">
                       <button
                         type="button"

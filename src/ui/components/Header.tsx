@@ -1,9 +1,12 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Download, Trash2, Upload } from 'lucide-react';
+import type { ExportFile } from '../../../shared/schemas';
+import { isPipelineLocked } from '../../agents/pipeline';
 import { label } from '../../config/labels';
+import { usePipeline } from '../../state/pipelineContext';
 import { exportAll, importAll, isDirty } from '../../state/persistence';
 import { extractPersistedSnapshot, useStore } from '../../state/store';
-import type { ExportFile } from '../../../shared/schemas';
 import { Tooltip } from './Tooltip';
 
 export interface HeaderProps {
@@ -11,13 +14,104 @@ export interface HeaderProps {
   subtitle: string;
 }
 
+interface AccessibleDialogProps {
+  open: boolean;
+  ariaLabel: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}
+
+const AccessibleDialog: React.FC<AccessibleDialogProps> = ({
+  open,
+  ariaLabel,
+  onClose,
+  children,
+}) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const prevFocus = document.activeElement as HTMLElement | null;
+    const rootEl = document.getElementById('root') as (HTMLElement & { inert?: boolean }) | null;
+    if (rootEl) {
+      rootEl.inert = true;
+    }
+
+    const focusFirst = () => {
+      const focusables = containerRef.current?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusables && focusables.length > 0) {
+        focusables[0].focus();
+      } else {
+        containerRef.current?.focus();
+      }
+    };
+    const rafId = window.requestAnimationFrame(focusFirst);
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+        return;
+      }
+      if (e.key !== 'Tab' || !containerRef.current) return;
+      const focusables = Array.from(
+        containerRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      document.removeEventListener('keydown', handleKeyDown);
+      if (rootEl) {
+        rootEl.inert = false;
+      }
+      if (prevFocus && typeof prevFocus.focus === 'function' && prevFocus.isConnected) {
+        prevFocus.focus();
+      }
+    };
+  }, [open, onClose]);
+
+  if (!open || typeof document === 'undefined') return null;
+
+  return createPortal(
+    <div
+      ref={containerRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={ariaLabel}
+      tabIndex={-1}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4"
+    >
+      {children}
+    </div>,
+    document.body
+  );
+};
+
 export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
   const { state, dispatch } = useStore();
+  const { isBusy } = usePipeline();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importCandidate, setImportCandidate] = useState<ExportFile | null>(null);
-  const [importError, setImportError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
 
+  const pipelineLocked = isBusy || isPipelineLocked();
   const dirty = isDirty(state);
   const activeNiche =
     state.profile.niche === 'Lainnya' && state.profile.customNiche
@@ -29,31 +123,51 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
       : state.profile.language;
 
   const handleExport = () => {
-    const exported = exportAll(extractPersistedSnapshot(state));
-    const blob = new Blob([JSON.stringify(exported, null, 2)], {
-      type: 'application/json',
-    });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `faceless-studio-backup-${exported.exportedAt.slice(0, 10)}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    dispatch({ type: 'MARK_EXPORTED', exportedAt: exported.exportedAt });
+    setActionError(null);
+    let url: string | null = null;
+    try {
+      const exported = exportAll(extractPersistedSnapshot(state));
+      const blob = new Blob([JSON.stringify(exported, null, 2)], {
+        type: 'application/json',
+      });
+      url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `faceless-studio-backup-${exported.exportedAt.slice(0, 10)}.json`;
+      anchor.click();
+      dispatch({ type: 'MARK_EXPORTED', exportedAt: exported.exportedAt });
+    } catch (err) {
+      setActionError(
+        err instanceof Error
+          ? `Gagal mengekspor data JSON: ${err.message}`
+          : 'Gagal mengekspor data JSON.'
+      );
+    } finally {
+      if (url) {
+        URL.revokeObjectURL(url);
+      }
+    }
   };
 
   const handleFilePicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    setImportError(null);
+    setActionError(null);
     const file = e.target.files?.[0];
     if (!file) return;
+    if (isBusy || isPipelineLocked()) {
+      setActionError('Tunggu hingga pipeline selesai sebelum mengimpor data JSON.');
+      e.target.value = '';
+      return;
+    }
     try {
       const text = await file.text();
       const result = importAll(text);
       if (!result.ok) {
-        setImportError(result.error);
+        setActionError(result.error);
         return;
       }
       setImportCandidate(result.file);
+    } catch {
+      setActionError('Gagal membaca file JSON yang dipilih.');
     } finally {
       e.target.value = '';
     }
@@ -61,11 +175,21 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
 
   const confirmImport = () => {
     if (!importCandidate) return;
+    if (isBusy || isPipelineLocked()) {
+      setActionError('Tidak dapat menimpa data saat pipeline masih berjalan.');
+      setImportCandidate(null);
+      return;
+    }
     dispatch({ type: 'IMPORT_ALL', file: importCandidate });
     setImportCandidate(null);
   };
 
   const confirmClearAll = () => {
+    if (isBusy || isPipelineLocked()) {
+      setActionError('Tidak dapat menghapus data saat pipeline masih berjalan.');
+      setClearConfirmOpen(false);
+      return;
+    }
     dispatch({ type: 'CLEAR_LOCAL_DATA' });
     setClearConfirmOpen(false);
   };
@@ -85,9 +209,7 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
             <span aria-hidden="true">·</span>
             <span>{activeLanguage}</span>
             <span aria-hidden="true">·</span>
-            <span>
-              {label(state.profile.platform)}
-            </span>
+            <span>{label(state.profile.platform)}</span>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -101,14 +223,20 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
             />
             <button
               type="button"
+              disabled={pipelineLocked}
               onClick={() => fileInputRef.current?.click()}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 transition-colors"
+              title={
+                pipelineLocked
+                  ? 'Tunggu hingga pipeline selesai sebelum mengimpor data'
+                  : undefined
+              }
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 transition-colors"
             >
               <Upload className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
               <span>Impor JSON</span>
             </button>
             <Tooltip
-              text="Pulihkan profil, referensi gaya, pengetahuan, pengaturan model, dan riwayat dari file JSON cadangan (tanpa kode akses)."
+              text="Pulihkan profil, referensi gaya, pengetahuan, pengaturan model, dan riwayat dari file JSON cadangan."
               label="Panduan Impor JSON"
               position="bottom"
             />
@@ -122,16 +250,22 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
               <span>{dirty ? 'Ekspor Cadangan*' : 'Ekspor JSON'}</span>
             </button>
             <Tooltip
-              text="Unduh seluruh data studio sebagai file JSON untuk cadangan. Kode akses, kunci API, video, dan frame tidak pernah disertakan."
+              text="Unduh seluruh data studio sebagai file JSON untuk cadangan. Kunci API, token OAuth, video, dan frame tidak pernah disertakan."
               label="Panduan Ekspor JSON"
               position="bottom"
             />
 
             <button
               type="button"
+              disabled={pipelineLocked}
               onClick={() => setClearConfirmOpen(true)}
               aria-label="Hapus semua data lokal"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-950/40 px-2.5 py-1.5 text-xs font-medium text-rose-200 hover:bg-rose-950/70 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400 transition-colors"
+              title={
+                pipelineLocked
+                  ? 'Tunggu hingga pipeline selesai sebelum menghapus data'
+                  : undefined
+              }
+              className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-950/40 px-2.5 py-1.5 text-xs font-medium text-rose-200 hover:bg-rose-950/70 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400 transition-colors"
             >
               <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
               <span>Hapus Data</span>
@@ -140,15 +274,15 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
         </div>
       </div>
 
-      {importError && (
+      {actionError && (
         <div
           role="alert"
           className="mt-3 rounded-lg border border-rose-500/40 bg-rose-950/60 px-3 py-2 text-xs text-rose-200 flex items-center justify-between gap-2"
         >
-          <span>{importError}</span>
+          <span>{actionError}</span>
           <button
             type="button"
-            onClick={() => setImportError(null)}
+            onClick={() => setActionError(null)}
             className="text-rose-200 underline hover:text-white"
           >
             Tutup
@@ -156,13 +290,12 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
         </div>
       )}
 
-      {importCandidate && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Konfirmasi Impor Data"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4"
-        >
+      <AccessibleDialog
+        open={Boolean(importCandidate)}
+        ariaLabel="Konfirmasi Impor Data"
+        onClose={() => setImportCandidate(null)}
+      >
+        {importCandidate && (
           <div className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl space-y-3">
             <h2 className="text-base font-semibold text-slate-100">
               Konfirmasi Impor Cadangan JSON
@@ -183,55 +316,52 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
               <button
                 type="button"
                 onClick={() => setImportCandidate(null)}
-                className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700"
+                className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
               >
                 Batal
               </button>
               <button
                 type="button"
                 onClick={confirmImport}
-                className="rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-400"
+                className="rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
               >
-                Ya, Timpa & Pulihkan
+                Ya, Timpa &amp; Pulihkan
               </button>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </AccessibleDialog>
 
-      {clearConfirmOpen && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Konfirmasi Hapus Semua Data Lokal"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4"
-        >
-          <div className="w-full max-w-md rounded-xl border border-rose-500/40 bg-slate-900 p-5 shadow-2xl space-y-3">
-            <h2 className="text-base font-semibold text-rose-100">
-              Hapus Semua Data Lokal?
-            </h2>
-            <p className="text-xs leading-relaxed text-slate-300">
-              Tindakan ini akan menghapus permanen profil channel, profil gaya, suntingan blok pengetahuan, pengaturan model, dan seluruh riwayat run dari browser ini lalu mengembalikannya ke standar awal.
-            </p>
-            <div className="pt-1 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setClearConfirmOpen(false)}
-                className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700"
-              >
-                Batal
-              </button>
-              <button
-                type="button"
-                onClick={confirmClearAll}
-                className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-400"
-              >
-                Ya, Hapus Semua Data Lokal
-              </button>
-            </div>
+      <AccessibleDialog
+        open={clearConfirmOpen}
+        ariaLabel="Konfirmasi Hapus Semua Data Lokal"
+        onClose={() => setClearConfirmOpen(false)}
+      >
+        <div className="w-full max-w-md rounded-xl border border-rose-500/40 bg-slate-900 p-5 shadow-2xl space-y-3">
+          <h2 className="text-base font-semibold text-rose-100">
+            Hapus Semua Data Lokal?
+          </h2>
+          <p className="text-xs leading-relaxed text-slate-300">
+            Tindakan ini akan menghapus permanen profil channel, profil gaya, suntingan blok pengetahuan, pengaturan model, dan seluruh riwayat run dari browser ini lalu mengembalikannya ke standar awal.
+          </p>
+          <div className="pt-1 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setClearConfirmOpen(false)}
+              className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            >
+              Batal
+            </button>
+            <button
+              type="button"
+              onClick={confirmClearAll}
+              className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300"
+            >
+              Ya, Hapus Semua Data Lokal
+            </button>
           </div>
         </div>
-      )}
+      </AccessibleDialog>
     </header>
   );
 };

@@ -290,11 +290,18 @@ export function mapGeminiError(err: unknown, hasYoutubeMedia: boolean): Provider
 
   const upstreamStatusText = parsedBody?.status;
   const sanitizedDetail = sanitizeErrorMessage(parsedBody?.message ?? rawMessage);
+  const retryDelayMatch =
+    sanitizedDetail.match(/retry(?:\s+in|\s+after)?\s+(\d+(?:\.\d+)?)\s*s\b/i) ??
+    rawMessage.match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/i);
+  const retryAfterMs = retryDelayMatch
+    ? Math.min(10_000, Math.round(Number.parseFloat(retryDelayMatch[1]) * 1000))
+    : undefined;
 
   const baseMeta: Omit<ProviderErrorMeta, 'errorKind'> = {
     upstreamStatus,
     upstreamCode: bodyCode ?? causeCode,
     upstreamStatusText,
+    ...(retryAfterMs !== undefined && Number.isFinite(retryAfterMs) ? { retryAfterMs } : {}),
     errorName,
     sanitizedMessage: sanitizedDetail,
   };
@@ -606,6 +613,16 @@ export function mapGeminiError(err: unknown, hasYoutubeMedia: boolean): Provider
   );
 }
 
+function supportsLowThinkingConfig(model: string): boolean {
+  const isGemini4 = model.startsWith('gemini-4-') || model.startsWith('models/gemini-4-');
+  const isGemini3Text =
+    (model.startsWith('gemini-3') || model.startsWith('models/gemini-3')) &&
+    !model.includes('image') &&
+    !model.includes('tts') &&
+    !model.includes('transcribe');
+  return isGemini4 || isGemini3Text;
+}
+
 export const geminiProvider: LLMProvider = {
   id: 'gemini',
   name: 'Google Gemini',
@@ -644,6 +661,12 @@ export const geminiProvider: LLMProvider = {
       systemInstruction: req.system,
       maxOutputTokens: req.maxTokens,
     };
+
+    if (supportsLowThinkingConfig(model)) {
+      config.thinkingConfig = {
+        thinkingLevel: ThinkingLevel.LOW,
+      };
+    }
 
     // Jangan kirim parameter temperature ke model seri gemini-4-* sesuai panduan SDK
     const isGemini4 = model.startsWith('gemini-4-') || model.startsWith('models/gemini-4-');

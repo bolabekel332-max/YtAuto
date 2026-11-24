@@ -1,0 +1,294 @@
+# AUDIT FORENSIK READ-ONLY: YtAuto / Faceless Studio
+
+Repo: `bolabekel332-max/YtAuto` · Commit diaudit: `e9931e4` ("refactor: simplify app structure and configuration", 2026-11-23 13:31 UTC) · Riwayat: 3 commit (`064cd7c` → `dc3e027` → `e9931e4`) di branch bawaan.
+
+## 0. Batasan audit (baca dulu)
+
+Laporan ini jujur soal apa yang benar-benar dilakukan.
+
+- **Metode:** pembacaan statis kode lewat konektor GitHub. Nomor baris tidak tersedia dari konektor, jadi bukti dirujuk dengan **file + fungsi/simbol**.
+- **Tidak dijalankan sama sekali:** `npm ci`, `lint`, `test`, `build`, `npm audit`, browser/Playwright (viewport 360–1920), maupun fixture kegagalan. Tidak ada request ke provider AI (tidak ada biaya). Status CI GitHub tidak dapat dilihat.
+- **Branch lain, PR, dan isi 2 PNG baru di `public/assets/aistudio/`:** tidak diperiksa. Pencarian kode GitHub tidak terindeks, jadi semua jalur ditelusuri manual.
+- **Dibaca penuh di commit ini:** `server.ts`, `server/{config,auth,routes,validation,promptBuilder,agentRunner,styleAnalyzer,serverCore.test}.ts`, `server/providers/{gemini,retry,types,searchTwoStep}.ts`, `shared/{schemas,agentSchemas,agentInputs,agentRegistry}.ts`, `src/{App}.tsx`, `src/api/client.ts`, `src/state/{store,persistence,defaults}.ts`, `src/agents/pipeline.ts`, `src/ui/pages/VideoStudio.tsx`, `src/ui/components/{Header,AppShell,StepList,ErrorBoundary}.tsx`, `src/ui/renderers/{AgentOutput,ResearchView}.tsx`, `src/utils/safeUrl.ts`, `package.json`, `Dockerfile`, `README.md`, `.env.example`, CI.
+- **Tidak dibaca di commit ini (status NOT VERIFIED):** `nous.ts`, `nousAuth.ts`, `openrouter.ts`, `custom.ts`, `mock*.ts`, `logger.ts`, `registry.ts`, `frameExtractor.ts`, halaman `SetupChannel`, `StyleReferences` (+`StyleReferenceAnalyzerForm`), `Ideas`, `Audit`, `Analytics`, `Knowledge`, `ModelSettings`, `HistoryPanel`, renderer selain Research, `FormFields`, `index.html`, `vite.config.ts`, `tsconfig.json`, tes selain `serverCore.test.ts`.
+- **Keputusan desain pemilik:** penghapusan `APP_ACCESS_CODE` / password gate **tidak** dianggap bug dan tidak ada rekomendasi login. Yang diaudit hanya eksposur dan penyalahgunaan nyata.
+
+Verdict di bagian akhir bersifat **sementara** karena tidak ada verifikasi runtime.
+
+---
+
+## Report 1: Executive Summary
+
+Perbaikan dari putaran sebelumnya sebagian besar benar-benar ada di kode: mode produksi (`--prod`, cek `dist/`), 404 JSON untuk `/api/*`, header keamanan + CSP, `/api/healthz`, batas panjang & enum pada skema klien, validasi URL YouTube, allowlist model opsional, `wrapAsData` yang lebih kuat, pembungkusan blok pengetahuan, pembatalan via `AbortSignal`, penanganan blokir Gemini, retry yang berhenti pada auth error, validasi `localStorage` per bagian, ErrorBoundary, Docker, dan CI.
+
+Risiko terbesar justru berasal dari **cara komponen-komponen itu berinteraksi**:
+
+1. **Sumber "nyata" yang ditampilkan ke pengguna ditulis oleh model**, bukan berasal dari grounding pencarian (F-09). UI mengklaim itu "tidak dikarang".
+2. **Kontrak output AI tidak sinkron dengan kontrak penyimpanan/ekspor** (F-20). Satu output yang melewati batas bisa mereset seluruh Riwayat dan membuat tombol Ekspor gagal diam-diam. Data korup kemudian ditimpa tanpa backup (F-21).
+3. **Server mengikat `0.0.0.0` tanpa kontrol akses** (F-01). Sesuai desain pemilik tidak ada gerbang, tetapi README mengarahkan deploy Docker/Cloud Run tanpa peringatan eksposur.
+4. Pipeline: resume setelah interupsi di putaran revisi kehilangan umpan balik revisi dan membiarkan hasil hilir basi (F-14). Berpindah halaman membatalkan pipeline tanpa peringatan (F-15).
+
+**Kesimpulan:** layak untuk pemakaian lokal pribadi dengan Mock/Gemini setelah F-09 dan F-20/F-21 ditangani. Belum layak untuk deployment yang bisa dijangkau pihak lain.
+
+---
+
+## Report 2: Repository & Architecture Map
+
+Struktur aktual: `server.ts` + `server/` (Express, validasi, provider), `shared/` (kontrak Zod), `src/` (React, state, pipeline, UI), `docs/spec/`, `public/assets/aistudio/` (2 PNG), `Dockerfile`, `.github/workflows/ci.yml`, `package-lock.json`.
+
+```
+UI (pages/komponen)
+  → Store (useReducer + localStorage debounced 500 ms)
+  → api/client.ts (fetch + AbortSignal)
+  → Express /api  [headers → json(10MB) → no-store → rateLimiter → routes]
+  → Zod: AgentRunRequestSchema → validateConfig → validateInput (checkTextLengths)
+  → runAgent → buildSystemPrompt (+wrapAsData) → [two_step search] → withRetryAndFallback
+  → provider.generate (Gemini | OpenRouter | Nous | Custom | Mock)
+  → validateOutput (Zod) → 1× repair pass → AgentResult{output, sources?}
+  → pipeline.ts (state machine) → Store → localStorage → renderers
+```
+
+Kode mati / sisa: `ApiErrorCode 'unauthorized'`, redaksi `x-app-access-code` di `sanitizeErrorMessage`, `SAMPLE_INPUTS` di modul bersama, tooltip Header yang menyebut "kode akses". Tidak ada TODO/FIXME yang ditemukan di file yang dibaca.
+
+Status perbaikan butir prompt sebelumnya (diverifikasi di kode):
+
+| Butir | Status |
+|---|---|
+| S1 produksi, S3 trust proxy+cleanup, S4 batas skema, S6 header/healthz/logging, B2, B3, B5, B8 | **Terimplementasi** |
+| S2 gerbang akses | **Sengaja dihapus pemilik** |
+| S5 anti-injection | **Parsial**: `id`/`verifiedAt` blok pengetahuan masih mentah (F-05) |
+| S7 aset internal | **Parsial**: PDF dipindah ke `docs/spec/`, tetapi 2 PNG baru muncul di `public/` (D-05) |
+| B1 persistensi | **Terimplementasi dengan cacat desain** (F-20, F-21, F-22) |
+| B4 pembatalan | **Terimplementasi** pada Gemini/Nous (teruji); OpenRouter/Custom NOT VERIFIED |
+| B6, B7 (frame extractor, Analytics) | **NOT VERIFIED** (file tidak dibaca) |
+| B9 | Gerbang dihapus; skip-link & `aria-expanded` ada; dialog Header tanpa focus trap (U-01) |
+| P2-1…P2-7 | Package/lock/engines/Docker/CI/README/Privasi **ada**; `index.html` NOT VERIFIED |
+
+---
+
+## Report 3: Feature Completeness (penelusuran statis)
+
+| Fitur | UI | Handler | API | Backend | Persistence | Status |
+|---|---|---|---|---|---|---|
+| Studio Video (run) | ✓ | ✓ | ✓ | ✓ | ✓ | **PARTIALLY WORKING** (F-14, F-15, F-16) |
+| Cancel | ✓ | ✓ | ✓ (abort) | ✓ (Gemini/Nous) | ✓ (`interrupted`) | **WORKING** (statis) |
+| Retry / Skip / Resume | ✓ | ✓ | ✓ | ✓ | ✓ | **PARTIALLY WORKING** (F-14) |
+| Riwayat (buka/hapus) | NOT READ | store ✓ | – | – | ✓ | **NOT VERIFIED** (panel UI) |
+| Import / Export | ✓ | ✓ | – | – | ✓ | **PARTIALLY WORKING** (export bisa gagal diam-diam, F-20) |
+| Fallback model/provider | – | – | ✓ | ✓ (`retry.ts`) | – | **WORKING** (teruji unit) |
+| Provider Gemini | – | – | ✓ | ✓ | – | **WORKING** statis; model ID **NOT VERIFIED** (F-32) |
+| Provider Nous/OpenRouter/Custom | NOT READ | – | ✓ rute | NOT READ | – | **NOT VERIFIED** (Custom: nonaktif by design) |
+| Mock | ✓ badge | ✓ | ✓ | NOT READ (fixture lolos tes) | – | **MOCK ONLY** |
+| Setup Channel, Referensi Gaya, Ide & Kalender, Audit Konten, Analitik, Pengetahuan, Pengaturan Model | NOT READ | – | rute ada | – | – | **NOT VERIFIED** |
+
+Setiap status WORKING di atas berarti "jalur kode lengkap secara statis", bukan "terbukti di runtime".
+
+---
+
+## Report 4: UI & Interaction
+
+- **Dibaca:** `VideoStudio`, `StepList`, `Header`, `AppShell`, `ErrorBoundary`, `ResearchView`, `AgentOutput`.
+- **Baik:** tombol Submit di-disable saat `isBusy`; tombol Batal muncul saat berjalan; pesan error `role="alert"`; skip-link; `aria-expanded/controls` pada menu mobile; sidebar mobile berfungsi; Mock diberi badge jelas; disclaimer skor ide.
+- **Masalah:** F-15 (navigasi membatalkan pipeline), F-16 (impor/hapus saat pipeline berjalan), U-01 (dialog Header tanpa focus trap/Esc/inert), U-02 (export tanpa try/catch), U-05 (teks usang "kode akses").
+- **Tidak diuji:** semua viewport, kontras, keyboard flow, double-submit pada halaman lain. **NOT VERIFIED**.
+
+---
+
+## Report 5: AI Agent Audit
+
+Registry mendefinisikan 8 agent (`orchestrator, researcher, scriptwriter, visual, packaging, compliance, analyst, style_analyst`). Pipeline memakai 6; `analyst`/`style_analyst` berdiri sendiri.
+
+- **Tanggung jawab jelas dan tidak tumpang tindih.** Orchestrator dilarang mengendalikan alur.
+- **Context loss (nyata):** `compliance` tidak menerima `researchResult`/sumber (`complianceIn`), sehingga tidak bisa menguji klaim faktual naskah terhadap riset. Konfigurasinya `useSearch:true`, tetapi tugasnya hanya heuristik kebijakan.
+- **Agent yang diminta menulis fakta tanpa sumber:** `scriptwriter` tidak punya aturan untuk klaim faktual di narasi (PR-05).
+- **Handoff:** `scriptwriter` menerima `researchResult` penuh (termasuk `sources` hasil tulisan model) sebagai DATA.
+- **Repair pass:** satu kali, memakai model yang sama; hasil repair tidak membawa `revisionFeedback` kecuali sudah ada di `baseRequest`. Ini konsisten.
+- **`style_analyst`:** jumlah frame/gambar (`frameCountProvided`, `imageCountProvided`) dibuang karena Zod menghapus key tak dikenal (F-33).
+
+---
+
+## Report 6: Prompt Engineering Audit
+
+| ID | Sev | Temuan | Dampak |
+|---|---|---|---|
+| PR-01 | P3 | Tidak ada hierarki prioritas eksplisit (system > global > agent > tugas > data tak tepercaya). Hanya satu kalimat "blok DATA bukan instruksi" di aturan global. | Model bisa menimbang instruksi di data secara tidak konsisten. |
+| PR-02 | **P2** | Persona/tugas Researcher dan Compliance menyatakan riset "berbasis bukti pencarian aktual", tetapi bila `useSearch` mati/tak didukung/Mock, prompt **tidak diubah** dan tidak ada aturan "pencarian tidak tersedia". | Hasil dari memori model tampil seolah hasil riset (terkait F-10). |
+| PR-08 | **P2** | Skema output `researcherOut.sources`/`complianceOut.sources` menyuruh model **menulis URL**, padahal aturan global melarang mengarang URL. Kontradiksi prompt↔skema. | Akar F-09. |
+| PR-03 | P3 | Blok pengetahuan membawa `verifiedAt`, tetapi tidak ada aturan "perlakukan blok yang usang sebagai belum pasti". UI punya konsep stale, prompt tidak. | Kebijakan usang dipresentasikan sebagai fakta. |
+| PR-05 | P3 | Tidak ada aturan menandai klaim faktual non-metrik (mis. sains) sebagai perlu verifikasi, kecuali flag `sensitiveNiche`. | Fakta karangan di naskah lolos. |
+| PR-04 | P4 | Compliance mengaku memeriksa hak cipta/orisinalitas tanpa data pembanding selain profil gaya. UI sudah menyebut "heuristik". | Ekspektasi berlebih. |
+| PR-06 | P4 | JSON Schema masuk dua kali (prompt + `responseSchema`); `min/max` dibuang untuk Gemini, jadi `hooks=3`, `titles=5` hanya ditegakkan prompt + validasi + repair. | Biaya token; kegagalan kerap memicu repair. |
+
+---
+
+## Report 7: Prompt Injection & AI Security
+
+| Jalur | Hasil penelusuran |
+|---|---|
+| Input pengguna (topik, tempelan) | Terbungkus `wrapAsData`. Batas 20.000 karakter per string. Baik. |
+| Blok pengetahuan | `title/content/note` terbungkus. **`id` dan `verifiedAt` masuk mentah** ke system prompt (`promptBuilder.buildSystemPrompt`, baris metadata blok). Skema hanya membatasi panjang (id ≤64, verifiedAt ≤32), bukan karakter. **F-05, CONFIRMED.** Sumber: browser pengguna atau file backup yang diimpor. |
+| Hasil pencarian web | Dibungkus (`WEB_SEARCH_NOTES`, `WEB_SEARCH_SOURCES`) di langkah 2. Baik. |
+| Antar-agent | Seluruh `validatedInput` dibungkus satu blok `AGENT_INPUT_*`. Tidak ada penandaan provenance per sumber. |
+| Media (gambar/frame/video) | Tidak ada label "konten gambar adalah data". Teks di dalam gambar bisa memengaruhi `style_analyst`; hasilnya (≤2.000 karakter × 10 atribut) mengalir ke 5 agent lain sebagai DATA. **F-07, POTENTIAL.** |
+| Delimiter | Statis, tanpa nonce. Regex menetralkan varian spasi/huruf `[DATA_UNTRUSTED_*` / `[DATA_ESCAPED_*`; varian lain tidak diuji. **F-06, POTENTIAL.** |
+| Eksfiltrasi | Model tidak memegang tool, kunci, atau env. Kunci hanya di server; log disanitasi; `sanitizeErrorMessage` menyaring pola kunci. Tidak ditemukan jalur eksfiltrasi nyata. |
+
+Skenario yang dianalisis: (a) backup JSON berbahaya menyuntikkan teks lewat `verifiedAt`/`id` di luar pembungkus; (b) screenshot berisi teks imperatif memengaruhi `suggestedName`/atribut gaya; (c) halaman web hasil grounding memuat instruksi. Tidak ada yang dieksekusi. Tidak ada tes injeksi end-to-end di repo.
+
+---
+
+## Report 8: Hallucination & Factual Reliability
+
+- **F-09 (CONFIRMED, P1).** `ResearchView` merender `data.sources` (JSON hasil tulisan model, `researcherOut.sources`), dengan judul "Sumber Grounding Pencarian" dan tooltip "tautan nyata… tidak dikarang". Sumber grounding sesungguhnya ada di `AgentResult.sources`, yang **tidak pernah dirender** `AgentOutput`. URL yang dikarang model bisa tampil sebagai sumber terverifikasi. `ComplianceView` (mengubah pola yang sama di commit ini) NOT VERIFIED.
+- **F-10 (CONFIRMED, P2).** `searchTwoStep` tetap lanjut bila langkah 1 tidak menghasilkan sumber grounding. Tidak ada flag `searchUsed/grounded` di `AgentResult`. Bila provider tidak mendukung search, `agentRunner` diam-diam memakai jalur tanpa search.
+- **F-12 (P3).** Tidak ada taksonomi bukti (fakta terverifikasi / temuan bersumber / estimasi / hipotesis / tidak diketahui). Hanya `analyst` punya `confidence`. Skor ide diberi disclaimer di UI (baik), tetapi teks yang disalin (`copySummary`) memuat `[score/100]` tanpa disclaimer.
+- **F-13 (POTENTIAL).** URI grounding Gemini kemungkinan berupa tautan redirect, bukan URL kanonik; judul bisa hanya domain. NOT VERIFIED.
+- **Baik:** aturan global melarang metrik/URL/jaminan viral; `analyst` wajib `dataWarnings`; `style_analyst` dibatasi bukti visual dan metrik lokal menjangkar angka ritme/warna.
+
+---
+
+## Report 9: Pipeline & Orchestration
+
+Urutan aktual: `researcher?` → `scriptwriter` → `visual` → `packaging` → `compliance` → (maks 2 putaran revisi: ulang agent terdampak + hilir via `getDownstream`, lalu `compliance`) → `orchestrator` → `finalizeRun` (`blocked` hanya jika verdict akhir `reject` dan compliance tidak di-skip).
+
+Transisi: `idle → running → done/failed/skipped`; run: `running → paused | interrupted | completed | blocked`. Lock modul `activePipelineLock` mencegah dua run bersamaan.
+
+- **F-14 (CONFIRMED, P2).** Abort di tengah putaran revisi mengembalikan langkah ke `idle` dengan `result` lama. Saat Lanjutkan, loop pertama menjalankan ulang langkah itu **tanpa `revisionFeedback`** (hanya dibentuk di loop revisi), dan langkah hilir yang `done` tidak diinvalidasi. Compliance lalu menilai paket campuran (naskah baru, visual/packaging lama). Retry setelah kegagalan di putaran revisi mengalami hal yang sama.
+- **F-15 (CONFIRMED, P2).** `VideoStudio` memanggil `abort()` saat unmount, dan `AppShell` berpindah halaman tanpa peringatan. Pindah ke halaman lain = pipeline dibatalkan.
+- **F-16 (CONFIRMED, P3).** Impor/Hapus Data/Hapus Riwayat di `Header` tidak memeriksa `isPipelineLocked()`. Callback pipeline berikutnya menimpa `activeRun` dan menyisipkan riwayat ke data hasil impor.
+- **F-17 (POTENTIAL, P3).** `retryStep/skipStep` menyiarkan status `running` sebelum cek lock; dilindungi guard UI.
+- **F-19 (POTENTIAL, P3).** Menjalankan ulang langkah pada run yang dibuka dari riwayat membuat entri baru ber-id sama dengan `selection` direset ke 0/0.
+- **F-18 (P4, desain).** Melewati `visual`/`packaging` memaksa compliance gagal/dilewati; run bisa "completed" dengan paket parsial. Orchestrator diwajibkan menyatakannya.
+- Cancel: **berfungsi** statis (signal sampai `fetch` klien, `bindRequestAbort` di server, `combineAbortSignals` di Gemini/Nous).
+
+---
+
+## Report 10: Provider & Model Integration
+
+- **Gemini (dibaca penuh):** `systemInstruction`, `responseSchema` (disaring), `googleSearch`, `abortSignal`, deteksi blokir, pemetaan error rinci (teruji), klien di-cache per kunci.
+- **F-27 (P2, MEDIUM):** langkah 1 search dibatasi `min(maxTokens, 4096)`; jika terpotong, pesan error menyuruh menaikkan Max Tokens yang tidak berpengaruh. `generate()` tidak mengatur `thinkingConfig` (sedangkan `testConnection` mengaturnya), sementara default `maxTokens` hanya 2048 (orchestrator) dan 4096 (compliance). Model dengan thinking dapat kehabisan token → `output_truncated` tanpa fallback. Runtime NOT VERIFIED.
+- **F-28 (P3):** kegagalan non-retryable selain auth/permission (400/404) tetap mencoba semua model cadangan, memakai kuota harian. `retryAfterMs` tidak pernah diisi mapper Gemini.
+- **F-29 (P4):** `AbortSignal.any` butuh Node ≥ 20.3, `engines` hanya `>=20`.
+- **F-32 (NOT VERIFIED):** `gemini-4-hydrogen`, `nvidia/nemotron-3-ultra-550b-a55b:free`, `qwen/qwen4-max:free`, dan pengecualian temperature `gemini-4-*` tidak bisa saya pastikan valid. Bila tidak valid, semua agent gagal 404.
+- **F-30 (CONFIRMED, P3):** README menyatakan "Telemetri Fallback… dikembalikan pada respons JSON agar UI dapat menampilkannya". `AgentResult` hanya berisi `model`, dan `retry.ts` tidak mencatat fallback.
+- Biaya: hanya menghitung jumlah panggilan; `tokens` dicatat tetapi tidak ada estimasi biaya.
+- OpenRouter, Nous, Custom, Mock: NOT VERIFIED (tes Nous dan fixture Mock lolos secara tertulis, belum dijalankan).
+
+---
+
+## Report 11: Backend & Security
+
+Keputusan pemilik dihormati: tidak ada rekomendasi login atau password.
+
+| ID | Sev | Temuan | Skenario / Prasyarat | Mitigasi yang sejalan dengan desain |
+|---|---|---|---|---|
+| F-01 | **P1** | `app.listen(port, '0.0.0.0')` tanpa opsi `HOST`. README mengarahkan `docker run -p 3000:3000` dan Cloud Run tanpa peringatan eksposur. | Siapa pun yang bisa menjangkau port (LAN/Internet) memanggil `/api/agent/run` dan memakai kunci Gemini-mu. Pembatas: 20 req/menit/IP, 300 panggilan/hari di memori (reset saat restart). | Tambah `HOST` (default `127.0.0.1`; Docker set `0.0.0.0` eksplisit); tambahkan peringatan eksposur di README; batasi di level jaringan/firewall. |
+| F-03 | P2 | Penyalahgunaan biaya: batas harian menghitung panggilan, bukan token; `maxTokens`, `model`, dan `timeoutMs` dikendalikan klien (allowlist model hanya jika env diisi); `/api/agent/test`, `/api/providers/test`, dan `/api/providers/:id/models` tanpa pembatas khusus. | Pihak yang menjangkau server menghabiskan kuota (≤ 300 panggilan/hari × `maxTokens` besar). | Tetapkan `GEMINI_MODEL_ALLOWLIST` default, plafon `maxTokens` di server, anggaran token harian. |
+| F-04 | P2 | Sesi OAuth Nous bersifat global. Rute `start/poll/disconnect/models` terbuka. | Siapa pun yang menjangkau server bisa memutus sesi atau memakai akun Nous yang tersambung. | Aktifkan hanya bila dipakai; ikat ke loopback (F-01). |
+| F-02 | P3 | `TRUST_PROXY=true` mempercayai `X-Forwarded-For` mana pun. | Pembatas laju bisa dilewati jika salah konfigurasi. | Dokumentasikan; utamakan angka hop. |
+| F-35 | P4 | Tidak ada timeout paksa pada shutdown (`server.close` menunggu koneksi). | Penutupan lambat. | Tambah timeout. |
+
+Baik: tidak ada SSRF dari klien (allowlist URL provider kustom kosong), tidak ada upload file ke disk, tidak ada eksekusi shell, tidak ada `dangerouslySetInnerHTML`, CSP produksi + header dasar, 413/400 JSON, pesan 500 generik, log disanitasi. Tidak ditemukan path traversal atau command injection pada file yang dibaca. CORS tidak dikonfigurasi (same-origin).
+
+---
+
+## Report 12: Data & Persistence
+
+- **F-20 (P1, mekanisme CONFIRMED, pemicu MEDIUM).** Kontrak tidak sinkron: `complianceOut` tidak punya batas, sedangkan `ComplianceVerdictSchema` membatasi `notes≤4000`, `issues≤30`, `similarityRisks≤20`, `reason≤2000`, `problem/fix≤4000`, dan `RevisionFeedbackSchema` membatasi `issues≤20` dan `previousOutput≤60.000`. Pipeline menyimpan output model apa adanya ke `complianceRounds`/`history`. Akibatnya:
+  1. `load()` memvalidasi `history` dan `activeRun` sebagai **satu bagian utuh**, sehingga satu entri yang melanggar mereset **seluruh** bagian;
+  2. `exportAll` memanggil `ExportFileSchema.parse` yang melempar error, dan `Header.handleExport` tidak memiliki try/catch, jadi tombol Ekspor gagal diam-diam (error di event handler tidak ditangkap ErrorBoundary);
+  3. permintaan revisi ditolak 400 di server.
+- **F-21 (P2, CONFIRMED).** Bagian yang di-reset ditimpa: `save()` dan `visibilitychange→hidden` menulis ulang default tanpa backup string mentah. Cukup berpindah tab untuk menghancurkan data yang sebenarnya bisa dipulihkan. Peringatan hanya berupa banner.
+- **F-22 (P2, CONFIRMED).** Multi-tab: event `storage` hanya memunculkan banner. `flushPending` dari tab usang tetap menimpa data tab yang lebih baru setiap tab disembunyikan.
+- **F-23 (P3, POTENTIAL).** `AgentResult.output` bertipe `unknown` saat dimuat; renderer melakukan cast. Bentuk lama/korup dapat membuat render crash berulang sampai Reset.
+- **F-24 (P3, POTENTIAL).** `JSON.stringify` seluruh state (termasuk `activeRun` yang juga ada di riwayat) tiap 500 ms; pembuangan kuota hanya dari riwayat.
+- **F-25 (P4).** Impor tanpa batas ukuran; `schemaVersion` literal tanpa jalur migrasi. **F-26 (P4):** `clearLocalData()` dipanggil di dalam reducer (efek samping).
+- Baik: `UPSERT_HISTORY` dedup berdasarkan id, `normalizeInterruptedRun`, ErrorBoundary dengan ekspor mentah, dan hapus riwayat/data tersedia.
+
+---
+
+## Report 13: Testing & Reliability
+
+- **Ada:** 6 file tes `node:test`; `serverCore.test.ts` luas (rate limit, retry/fallback, pemetaan error Gemini, sanitasi log, Nous OAuth + single-flight, `registerRoutes` 404/healthz, skema S4, `wrapAsData`). Tes `isProdMode`, `parseTrustProxy`, blokir Gemini, dan abort juga ada.
+- **Tidak dijalankan oleh saya.** Status CI GitHub tidak terlihat.
+- **Gap nyata:** nol tes untuk `pipeline.ts` (revisi, resume, abort), reducer store, `runAgent` (jalur repair, abort), `searchTwoStep`, injeksi end-to-end, `createApp()` (header/CSP/413/prod-guard), UI, konkurensi, dan skenario data korup di tingkat store. Tes `/api/healthz` membangun Express sendiri, bukan `createApp`. Tes `wrapAsData` hanya menguji varian delimiter langsung.
+- Tidak ada fixture adversarial untuk F-05, F-09, F-14, F-20.
+
+---
+
+## Report 14: Master Bug Register (dideduplikasi)
+
+| ID | Sev | Conf. | Status | Judul | Lokasi |
+|---|---|---|---|---|---|
+| F-09 | P1 | CONFIRMED | STATICALLY CONFIRMED | Sumber yang dirender adalah tulisan model, bukan grounding | `ResearchView`, `AgentOutput`, `agentSchemas.researcherOut/complianceOut` |
+| F-20 | P1 | HIGH | STATICALLY CONFIRMED | Output AI vs kontrak persistensi/ekspor tidak sinkron → reset riwayat / ekspor gagal | `agentSchemas.complianceOut`, `schemas.ComplianceVerdictSchema`, `persistence.load/exportAll`, `Header.handleExport` |
+| F-01 | P1 | CONFIRMED | STATICALLY CONFIRMED | Bind `0.0.0.0` tanpa `HOST`; README mengarahkan deploy publik | `server.ts`, `README.md` |
+| F-14 | P2 | CONFIRMED | STATICALLY CONFIRMED | Resume/retry di revisi kehilangan feedback + hilir basi | `pipeline.ts` |
+| F-15 | P2 | CONFIRMED | STATICALLY CONFIRMED | Pindah halaman membatalkan pipeline | `VideoStudio` cleanup, `AppShell` |
+| F-10 | P2 | CONFIRMED | STATICALLY CONFIRMED | Tidak ada flag grounding; two-step lanjut tanpa sumber | `searchTwoStep.ts`, `agentRunner.ts`, `schemas.AgentResultSchema` |
+| PR-02/PR-08 | P2 | CONFIRMED | STATICALLY CONFIRMED | Prompt mengklaim pencarian; skema menyuruh model menulis URL | `agentRegistry.ts`, `agentSchemas.ts` |
+| F-21 | P2 | CONFIRMED | STATICALLY CONFIRMED | Data bagian-reset ditimpa tanpa backup | `store.ts`, `persistence.ts` |
+| F-22 | P2 | CONFIRMED | STATICALLY CONFIRMED | Multi-tab last-write-wins | `store.ts` |
+| F-27 | P2 | MEDIUM | POTENTIAL | Pemotongan token (thinking, cap 4096 langkah 1) | `searchTwoStep.ts`, `gemini.ts`, `defaults.ts` |
+| F-03 | P2 | CONFIRMED | STATICALLY CONFIRMED | Penyalahgunaan biaya via parameter klien | `auth.ts`, `schemas.ts`, `routes.ts` |
+| F-04 | P2 | CONFIRMED | STATICALLY CONFIRMED | Sesi OAuth Nous global & rute terbuka | `routes.ts`, `nousAuth.ts` |
+| F-05 | P3 | CONFIRMED | STATICALLY CONFIRMED | `id`/`verifiedAt` blok pengetahuan di luar pembungkus | `promptBuilder.ts`, `schemas.KnowledgeBlockSchema` |
+| F-07 | P3 | MEDIUM | POTENTIAL | Injeksi tak langsung via media → profil gaya → semua agent | `styleAnalyzer.ts`, `promptBuilder.ts` |
+| F-06 | P3 | LOW | POTENTIAL | Delimiter statis tanpa nonce | `promptBuilder.wrapAsData` |
+| F-16 | P3 | CONFIRMED | STATICALLY CONFIRMED | Impor/hapus saat pipeline berjalan | `Header.tsx` |
+| F-12 | P3 | CONFIRMED | STATICALLY CONFIRMED | Tidak ada taksonomi bukti; compliance tanpa akses riset | `agentInputs.complianceIn` |
+| F-28 | P3 | CONFIRMED | STATICALLY CONFIRMED | Retry 400/404 menghabiskan kuota; `Retry-After` tak terpakai | `retry.ts`, `gemini.ts` |
+| F-30 | P3 | CONFIRMED | STATICALLY CONFIRMED | README: telemetri fallback tidak ada | `README.md`, `schemas.ts` |
+| F-23, F-24, F-17, F-19, F-02 | P3 | LOW–MED | POTENTIAL | Render crash data lama; performa; status running palsu; selection reset; trust proxy | lihat laporan 9, 12 |
+| PR-01/03/05 | P3 | CONFIRMED | STATICALLY CONFIRMED | Hierarki, kadaluarsa pengetahuan, klaim faktual | `agentRegistry.ts`, `promptBuilder.ts` |
+| U-01 | P3 | CONFIRMED | STATICALLY CONFIRMED | Dialog Header tanpa focus trap/Esc/inert | `Header.tsx` |
+| D-05 | P3 | HIGH | STATICALLY CONFIRMED | 2 PNG baru di `public/` (isi tak diperiksa) | `public/assets/aistudio/` |
+| F-32 | P3 | – | NOT VERIFIED | ID model default tak terverifikasi | `defaults.ts`, `gemini.ts` |
+| F-29, F-33, F-35, F-25, F-26, F-18, F-13, U-05, D-01, D-03, D-06 | P4 | – | beragam | `rm -rf` di script `clean`; tooltip "kode akses"; `tsconfig` tak disalin ke image; `createApp` tak teruji; dll. | lihat laporan terkait |
+
+---
+
+## Report 15: Remediation Roadmap (tanpa mengubah kode)
+
+**PHASE 0: Blocker (F-09, F-20, F-21, F-01)**
+- F-09 / PR-08: hapus `sources` dari `researcherOut` dan `complianceOut`; render hanya `AgentResult.sources`; beri label provenance. *Validasi:* tes bahwa URL karangan di JSON model tidak pernah tampil.
+- F-20: selaraskan batas kontrak output dengan kontrak penyimpanan (atau potong/normalisasi sebelum disimpan); validasi `history` per entri, bukan per array; bungkus `handleExport` dengan try/catch dan pesan jelas. *Validasi:* fixture output compliance panjang → simpan/ekspor/muat ulang tanpa kehilangan.
+- F-21: salin string mentah ke kunci cadangan sebelum mereset bagian apa pun; jangan `flush` bila tidak ada perubahan.
+- F-01: tambah `HOST` default `127.0.0.1`, set `0.0.0.0` hanya di Docker, perbarui README dengan peringatan eksposur.
+
+**PHASE 1: Reliabilitas inti (F-14, F-15, F-16, F-22, F-04, F-03)**
+- Simpan `revisionFeedback` di `PipelineRun` dan invalidasi langkah hilir saat langkah hulu diulang; guard navigasi atau pindahkan pipeline ke luar siklus hidup halaman; cek `isPipelineLocked()` di Header; kunci tulis antar-tab (mis. `BroadcastChannel`/versi data); plafon `maxTokens` dan allowlist model default di server.
+
+**PHASE 2: Reliabilitas AI & keamanan prompt (F-10, F-05, F-07, F-06, PR-01..05, F-12)**
+- Tambah `searchUsed`/`groundedSourceCount` di `AgentResult` dan tampilkan; sesuaikan prompt saat pencarian tidak tersedia; validasi `id` (regex) dan `verifiedAt` (tanggal); label media sebagai data; nonce delimiter per request; hierarki instruksi eksplisit; aturan klaim faktual dan kadaluarsa pengetahuan; beri compliance akses ringkasan riset.
+
+**PHASE 3: UI/UX (U-01, U-05, F-15, viewport)**
+- Focus trap/Esc/inert pada dialog; bersihkan teks usang; uji 6 viewport dan keyboard flow dengan Playwright.
+
+**PHASE 4: Performa & maintainability (F-24, F-27, F-28, F-29, F-30, D-01..06)**
+- Atur `thinkingConfig`, naikkan default `maxTokens`, perbaiki pesan truncation; hentikan fallback pada 400; `engines >=20.3`; selaraskan README; perbaiki script `clean`; pindahkan/hapus PNG di `public/`.
+
+**PHASE 5: Verifikasi akhir**
+- Jalankan `npm ci && lint && test && build && npm audit`; tambah tes pipeline/store/`runAgent`/`createApp`/injeksi; E2E dengan Mock; uji manual model ID di AI Studio.
+
+Prioritas = dampak × dependensi. Tidak ada estimasi waktu karena tidak ada dasar pengukuran.
+
+---
+
+## Final Verdict
+
+| Pertanyaan | Jawaban |
+|---|---|
+| Fitur utama berfungsi? | Jalur kode lengkap untuk Studio Video; 7 halaman lain **belum diverifikasi**. |
+| UI & tombol bekerja? | Yang dibaca: ya, dengan cacat (F-15, F-16, U-02). Selebihnya NOT VERIFIED. |
+| Pipeline konsisten? | **Tidak sepenuhnya** (F-14). |
+| Agent jelas & tak bertentangan? | Peran jelas; kontradiksi prompt↔skema (PR-08) dan klaim pencarian (PR-02). |
+| Prompt injection memadai? | **Sebagian**: pembungkus baik, tetapi F-05 dan F-07. |
+| Hallucination terkendali? | **Belum**: F-09, F-10. |
+| Output dapat dipercaya & berprovenance? | **Belum** (F-09, F-12). |
+| Provider & fallback sesuai desain? | Gemini + fallback ya (statis); lainnya NOT VERIFIED; klaim README fallback tidak ada. |
+| Data & persistence aman? | **Belum** (F-20, F-21, F-22). |
+| Backend punya kerentanan terbukti? | Tidak ada eksploit klasik; ada risiko eksposur/penyalahgunaan (F-01, F-03, F-04). |
+| Layak produksi? | **Tidak** untuk layanan yang dapat dijangkau pihak lain. |
+
+**Verdict sementara: PARTIALLY READY.** Dapat dipakai lokal oleh satu pengguna dengan risiko yang diketahui. Blocker menuju production-ready: F-09, F-20/F-21, F-01, F-14/F-15, plus verifikasi runtime (tes, build, UI, model ID, `npm audit`) yang belum dilakukan.

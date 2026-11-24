@@ -68,7 +68,6 @@ export const FIXTURES: Record<SchemaId, unknown> = {
         platform: 'youtube_shorts',
       },
     ],
-    sources: [],
   },
   scriptwriter: {
     hooks: [
@@ -191,7 +190,6 @@ export const FIXTURES: Record<SchemaId, unknown> = {
     ],
     notes:
       '[SIMULASI MOCK] Ini adalah output simulasi lokal (bukan hasil pemeriksaan model AI nyata). Tetap lakukan peninjauan manual terhadap kebijakan platform terbaru.',
-    sources: [],
   },
   audit: {
     perVideo: [

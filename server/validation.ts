@@ -2,7 +2,6 @@ import { ZodError } from 'zod';
 import {
   MAX_FALLBACKS,
   MAX_PASTE_CHARS,
-  MAX_TOKENS_LIMIT,
   TIMEOUT_LIMIT_MS,
 } from '../shared/constants';
 import { INPUT_SCHEMAS } from '../shared/agentInputs';
@@ -88,11 +87,12 @@ export function validateConfig(
     throw new AppApiError('invalid_request', 400, 'Temperature harus berada di antara 0 dan 2.');
   }
 
-  if (config.maxTokens > MAX_TOKENS_LIMIT) {
+  const { serverMaxTokensCap } = getEnv();
+  if (config.maxTokens > serverMaxTokensCap) {
     throw new AppApiError(
       'invalid_request',
       400,
-      `Max tokens melebihi batas maksimum (${MAX_TOKENS_LIMIT}).`
+      `Max tokens (${config.maxTokens}) melebihi plafon server (${serverMaxTokensCap}).`
     );
   }
 

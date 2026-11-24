@@ -116,6 +116,7 @@ export const complianceIn = z.object({
   packaging: packagingOut,
   activeStyleReferenceIds: z.array(z.string().max(200)).max(20).optional(),
   styleSummary: z.record(z.string(), z.unknown()).optional(),
+  researchSummary: z.string().max(6000).optional(),
   recentVideos: z.array(RecentVideoSchema).max(MAX_RECENT_VIDEOS).optional(),
 });
 export type ComplianceInput = z.infer<typeof complianceIn>;
@@ -169,6 +170,8 @@ export const styleAnalystIn = z.object({
     .min(MAX_IMAGES_MIN)
     .max(MAX_IMAGES_MAX)
     .optional(),
+  frameCountProvided: z.number().int().min(0).max(50).optional(),
+  imageCountProvided: z.number().int().min(0).max(50).optional(),
 });
 export type StyleAnalystInput = z.infer<typeof styleAnalystIn>;
 

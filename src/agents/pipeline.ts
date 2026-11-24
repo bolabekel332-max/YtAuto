@@ -8,21 +8,23 @@ import type {
   VisualOutput,
 } from '../../shared/agentSchemas';
 import type { RecentVideo } from '../../shared/agentInputs';
-import type {
-  AgentId,
-  AgentModelConfig,
-  AgentResult,
-  ChannelProfile,
-  ComplianceVerdict,
-  HistoryEntry,
-  KnowledgeBlock,
-  PipelineRun,
-  PipelineStepId,
-  RevisableAgentId,
-  RevisionFeedback,
-  RunInput,
-  StepState,
-  StyleProfile,
+import {
+  normalizeComplianceVerdict,
+  type AgentId,
+  type AgentModelConfig,
+  type AgentResult,
+  type ChannelProfile,
+  type ComplianceVerdict,
+  type HistoryEntry,
+  type KnowledgeBlock,
+  type PendingRevision,
+  type PipelineRun,
+  type PipelineStepId,
+  type RevisableAgentId,
+  type RevisionFeedback,
+  type RunInput,
+  type StepState,
+  type StyleProfile,
 } from '../../shared/schemas';
 import { runAgent } from '../api/client';
 import { getDownstream } from './dependencies';
@@ -36,6 +38,7 @@ export interface PipelineContext {
   signal?: AbortSignal;
   onRunUpdate: (run: PipelineRun) => void;
   onHistorySave: (entry: HistoryEntry) => void;
+  runAgentFn?: typeof runAgent;
 }
 
 let activePipelineLock = false;
@@ -132,6 +135,71 @@ function summarizeStyleForVisual(styleProfile?: StyleProfile) {
   return out;
 }
 
+function summarizeResearchForCompliance(research?: ResearcherOutput): string | undefined {
+  if (!research) return undefined;
+  const parts: string[] = [];
+  if (research.nicheMap) {
+    parts.push(`Peta Niche: ${research.nicheMap}`);
+  }
+  if (research.contentPillars?.length) {
+    parts.push(
+      `Pilar: ${research.contentPillars.map((p) => `${p.name} (${p.description})`).join('; ')}`
+    );
+  }
+  if (research.ideas?.length) {
+    parts.push(`Ide: ${research.ideas.map((i) => i.title).join('; ')}`);
+  }
+  const combined = parts.join('\n').trim();
+  return combined ? combined.slice(0, 6000) : undefined;
+}
+
+export function compactPreviousOutputForRevision(val: unknown): unknown {
+  if (val === undefined) return undefined;
+  try {
+    const serialized = JSON.stringify(val);
+    if (typeof serialized === 'string' && serialized.length <= 58_000) {
+      return val;
+    }
+    return {
+      truncated: true,
+      preview: (serialized ?? '').slice(0, 56_000),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export function buildRevisionFeedbackForAgent(
+  pending: PendingRevision | undefined,
+  agentId: RevisableAgentId
+): RevisionFeedback | undefined {
+  if (!pending) return undefined;
+  const relevantIssues = pending.issues
+    .filter((i) => i.relatedAgent === agentId)
+    .slice(0, 20)
+    .map((i) => ({
+      severity: i.severity,
+      relatedAgent: i.relatedAgent,
+      problem: i.problem.slice(0, 4000),
+      fix: i.fix.slice(0, 4000),
+    }));
+  if (relevantIssues.length === 0) return undefined;
+  return {
+    round: pending.round,
+    issues: relevantIssues,
+    previousOutput: compactPreviousOutputForRevision(pending.previousOutputs[agentId]),
+  };
+}
+
+function toNormalizedComplianceVerdict(compOut: ComplianceOutput): ComplianceVerdict {
+  return normalizeComplianceVerdict({
+    verdict: compOut.verdict,
+    issues: compOut.issues,
+    similarityRisks: compOut.similarityRisks,
+    notes: compOut.notes,
+  });
+}
+
 function buildStepInput(
   stepId: PipelineStepId,
   run: PipelineRun,
@@ -206,6 +274,7 @@ function buildStepInput(
         packaging: packagingOutput,
         activeStyleReferenceIds: activeStyle?.referenceIds,
         styleSummary: summarizeStyleForVisual(activeStyle),
+        researchSummary: summarizeResearchForCompliance(researchResult),
         recentVideos,
       };
 
@@ -262,7 +331,8 @@ async function executeSingleStep(
 
   try {
     const inputPayload = buildStepInput(stepId, working, ctx, activeStyle);
-    const result = await runAgent(
+    const runner = ctx.runAgentFn ?? runAgent;
+    const result = await runner(
       {
         agentId: stepId,
         mode: 'default',
@@ -291,6 +361,7 @@ async function executeSingleStep(
   } catch (err) {
     const isAborted =
       Boolean(ctx.signal?.aborted) ||
+      (err instanceof Error && err.name === 'AbortError') ||
       (err instanceof DOMException && err.name === 'AbortError');
     if (isAborted) {
       working = {
@@ -340,24 +411,97 @@ function finalizeRun(
 
   const completedRun: PipelineRun = {
     ...run,
+    pendingRevision: undefined,
     status: finalStatus,
   };
   ctx.onRunUpdate(completedRun);
 
+  const existingEntry = ctx.history.find((h) => h.id === completedRun.id);
   const entry: HistoryEntry = {
     id: completedRun.id,
-    createdAt: new Date().toISOString(),
+    createdAt: existingEntry?.createdAt ?? new Date().toISOString(),
     input: completedRun.input,
     run: completedRun,
-    selection: {
-      titleIndex: 0,
-      hookIndex: 0,
-    },
+    selection: existingEntry?.selection
+      ? { ...existingEntry.selection }
+      : {
+          titleIndex: 0,
+          hookIndex: 0,
+        },
     profileSnapshot: structuredClone(ctx.profile),
     styleProfileSnapshot: activeStyle ? structuredClone(activeStyle) : undefined,
   };
   ctx.onHistorySave(entry);
   return completedRun;
+}
+
+async function runPendingRevisionPass(
+  currentRun: PipelineRun,
+  ctx: PipelineContext,
+  activeStyle: StyleProfile | undefined
+): Promise<{ ok: true; run: PipelineRun } | { ok: false; run: PipelineRun }> {
+  let run = currentRun;
+  if (!run.pendingRevision) {
+    return { ok: true, run };
+  }
+
+  for (const agentId of [...run.pendingRevision.remainingAgents]) {
+    const activePending = run.pendingRevision;
+    if (!activePending) break;
+    if (run.steps[agentId].status === 'skipped') {
+      const remaining = activePending.remainingAgents.filter((id) => id !== agentId);
+      run = {
+        ...run,
+        pendingRevision: {
+          ...activePending,
+          remainingAgents: remaining,
+        },
+      };
+      ctx.onRunUpdate(run);
+      continue;
+    }
+
+    const feedback = buildRevisionFeedbackForAgent(activePending, agentId);
+    const rerunRes = await executeSingleStep(agentId, run, ctx, activeStyle, feedback);
+    if (!rerunRes.ok) {
+      return { ok: false, run: rerunRes.run };
+    }
+    run = {
+      ...rerunRes.run,
+      pendingRevision: rerunRes.run.pendingRevision
+        ? {
+            ...rerunRes.run.pendingRevision,
+            remainingAgents: rerunRes.run.pendingRevision.remainingAgents.filter(
+              (id) => id !== agentId
+            ),
+          }
+        : undefined,
+    };
+    ctx.onRunUpdate(run);
+  }
+
+  // Jalankan ulang Compliance setelah seluruh agent terdampak selesai (kecuali jika di-skip)
+  if (run.steps.compliance.status !== 'done' && run.steps.compliance.status !== 'skipped') {
+    const compRes = await executeSingleStep('compliance', run, ctx, activeStyle);
+    if (!compRes.ok) {
+      return { ok: false, run: compRes.run };
+    }
+    const compOut = compRes.result.output as ComplianceOutput;
+    run = {
+      ...compRes.run,
+      pendingRevision: undefined,
+      complianceRounds: [...compRes.run.complianceRounds, toNormalizedComplianceVerdict(compOut)],
+    };
+    ctx.onRunUpdate(run);
+  } else {
+    run = {
+      ...run,
+      pendingRevision: undefined,
+    };
+    ctx.onRunUpdate(run);
+  }
+
+  return { ok: true, run };
 }
 
 async function continueDeterministicPipeline(
@@ -381,32 +525,35 @@ async function continueDeterministicPipeline(
       'compliance',
     ];
 
-    // 1. Jalankan langkah berurutan yang belum done/skipped
-    for (const stepId of coreSequence) {
-      const state = run.steps[stepId];
-      if (state.status === 'done' || state.status === 'skipped') {
-        continue;
+    // 1. Jika sedang melanjutkan putaran revisi yang terputus/jeda, selesaikan dulu dengan RevisionFeedback tersimpan
+    if (run.pendingRevision) {
+      const pendingOutcome = await runPendingRevisionPass(run, ctx, activeStyle);
+      if (!pendingOutcome.ok) {
+        return pendingOutcome.run;
       }
+      run = pendingOutcome.run;
+    } else {
+      // Jalankan langkah inti berurutan yang belum done/skipped
+      for (const stepId of coreSequence) {
+        const state = run.steps[stepId];
+        if (state.status === 'done' || state.status === 'skipped') {
+          continue;
+        }
 
-      const outcome = await executeSingleStep(stepId, run, ctx, activeStyle);
-      if (!outcome.ok) {
-        return outcome.run;
-      }
-      run = outcome.run;
+        const outcome = await executeSingleStep(stepId, run, ctx, activeStyle);
+        if (!outcome.ok) {
+          return outcome.run;
+        }
+        run = outcome.run;
 
-      if (stepId === 'compliance') {
-        const compOut = outcome.result.output as ComplianceOutput;
-        const verdictObj: ComplianceVerdict = {
-          verdict: compOut.verdict,
-          issues: compOut.issues,
-          similarityRisks: compOut.similarityRisks,
-          notes: compOut.notes,
-        };
-        run = {
-          ...run,
-          complianceRounds: [...run.complianceRounds, verdictObj],
-        };
-        ctx.onRunUpdate(run);
+        if (stepId === 'compliance') {
+          const compOut = outcome.result.output as ComplianceOutput;
+          run = {
+            ...run,
+            complianceRounds: [...run.complianceRounds, toNormalizedComplianceVerdict(compOut)],
+          };
+          ctx.onRunUpdate(run);
+        }
       }
     }
 
@@ -427,62 +574,38 @@ async function continueDeterministicPipeline(
         directlyFlagged.length > 0 ? directlyFlagged : ['scriptwriter'];
       const toRerun = getDownstream(targetSeed);
 
-      // Simpan output sebelumnya untuk RevisionFeedback lalu tandai langkah terdampak untuk diulang
+      // Simpan output sebelumnya & reset SELURUH langkah terdampak + compliance + orchestrator ke idle (F-14)
       const previousOutputs: Partial<Record<RevisableAgentId, unknown>> = {};
+      const updatedSteps = { ...run.steps };
       for (const agentId of toRerun) {
-        previousOutputs[agentId] = run.steps[agentId].result?.output;
+        previousOutputs[agentId] = compactPreviousOutputForRevision(
+          run.steps[agentId].result?.output
+        );
+        if (updatedSteps[agentId].status !== 'skipped') {
+          updatedSteps[agentId] = makeIdleStep();
+        }
       }
+      updatedSteps.compliance = makeIdleStep();
+      updatedSteps.orchestrator = makeIdleStep();
 
       run = {
         ...run,
         round: nextRound,
-        steps: {
-          ...run.steps,
-          compliance: makeIdleStep(),
+        pendingRevision: {
+          round: nextRound,
+          remainingAgents: toRerun,
+          issues: latestVerdict.issues.slice(0, 30),
+          previousOutputs,
         },
+        steps: updatedSteps,
       };
       ctx.onRunUpdate(run);
 
-      for (const agentId of toRerun) {
-        const relevantIssues = latestVerdict.issues.filter(
-          (i) => i.relatedAgent === agentId
-        );
-        const feedback: RevisionFeedback | undefined =
-          relevantIssues.length > 0
-            ? {
-                round: nextRound,
-                issues: relevantIssues,
-                previousOutput: previousOutputs[agentId],
-              }
-            : undefined;
-
-        const rerunRes = await executeSingleStep(agentId, run, ctx, activeStyle, feedback);
-        if (!rerunRes.ok) {
-          return rerunRes.run;
-        }
-        run = rerunRes.run;
+      const revisionOutcome = await runPendingRevisionPass(run, ctx, activeStyle);
+      if (!revisionOutcome.ok) {
+        return revisionOutcome.run;
       }
-
-      // Jalankan ulang Compliance setelah seluruh agent terdampak selesai
-      const compRes = await executeSingleStep('compliance', run, ctx, activeStyle);
-      if (!compRes.ok) {
-        return compRes.run;
-      }
-      run = compRes.run;
-      const compOut = compRes.result.output as ComplianceOutput;
-      run = {
-        ...run,
-        complianceRounds: [
-          ...run.complianceRounds,
-          {
-            verdict: compOut.verdict,
-            issues: compOut.issues,
-            similarityRisks: compOut.similarityRisks,
-            notes: compOut.notes,
-          },
-        ],
-      };
-      ctx.onRunUpdate(run);
+      run = revisionOutcome.run;
     }
 
     // 3. Orkestrator selalu berjalan di paling akhir sebagai ringkasan QC
@@ -500,13 +623,35 @@ async function continueDeterministicPipeline(
   }
 }
 
+export function getInvalidatedDownstreamSteps(stepId: PipelineStepId): PipelineStepId[] {
+  switch (stepId) {
+    case 'researcher':
+      return ['scriptwriter', 'visual', 'packaging', 'compliance', 'orchestrator'];
+    case 'scriptwriter':
+      return ['visual', 'packaging', 'compliance', 'orchestrator'];
+    case 'visual':
+    case 'packaging':
+      return ['compliance', 'orchestrator'];
+    case 'compliance':
+      return ['orchestrator'];
+    case 'orchestrator':
+      return [];
+  }
+}
+
 export function runPipeline(input: RunInput, ctx: PipelineContext): Promise<PipelineRun> {
+  if (activePipelineLock) {
+    return Promise.reject(new Error('Masih ada satu proses pipeline yang sedang berjalan.'));
+  }
   const initial = createInitialRun(input);
   ctx.onRunUpdate(initial);
   return continueDeterministicPipeline(initial, ctx);
 }
 
 export function resumeRun(run: PipelineRun, ctx: PipelineContext): Promise<PipelineRun> {
+  if (activePipelineLock) {
+    return Promise.reject(new Error('Masih ada satu proses pipeline yang sedang berjalan.'));
+  }
   return continueDeterministicPipeline(run, ctx);
 }
 
@@ -515,17 +660,48 @@ export function retryStep(
   stepId: PipelineStepId,
   ctx: PipelineContext
 ): Promise<PipelineRun> {
+  if (activePipelineLock) {
+    return Promise.reject(new Error('Masih ada satu proses pipeline yang sedang berjalan.'));
+  }
+
+  const downstream = getInvalidatedDownstreamSteps(stepId);
+  const updatedSteps = {
+    ...run.steps,
+    [stepId]: {
+      ...run.steps[stepId],
+      status: 'idle' as const,
+      error: undefined,
+    },
+  };
+  for (const depId of downstream) {
+    if (updatedSteps[depId].status !== 'skipped') {
+      updatedSteps[depId] = makeIdleStep();
+    }
+  }
+
+  let updatedPendingRevision = run.pendingRevision;
+  if (
+    updatedPendingRevision &&
+    (stepId === 'scriptwriter' || stepId === 'visual' || stepId === 'packaging')
+  ) {
+    const affected = getDownstream([stepId]);
+    const combined = Array.from(
+      new Set([...affected, ...updatedPendingRevision.remainingAgents])
+    ) as RevisableAgentId[];
+    const ordered: RevisableAgentId[] = ['scriptwriter', 'visual', 'packaging'].filter((id) =>
+      combined.includes(id as RevisableAgentId)
+    ) as RevisableAgentId[];
+    updatedPendingRevision = {
+      ...updatedPendingRevision,
+      remainingAgents: ordered,
+    };
+  }
+
   const resetRun: PipelineRun = {
     ...run,
     status: 'running',
-    steps: {
-      ...run.steps,
-      [stepId]: {
-        ...run.steps[stepId],
-        status: 'idle',
-        error: undefined,
-      },
-    },
+    pendingRevision: updatedPendingRevision,
+    steps: updatedSteps,
   };
   ctx.onRunUpdate(resetRun);
   return continueDeterministicPipeline(resetRun, ctx);
@@ -536,9 +712,24 @@ export function skipStep(
   stepId: PipelineStepId,
   ctx: PipelineContext
 ): Promise<PipelineRun> {
+  if (activePipelineLock) {
+    return Promise.reject(new Error('Masih ada satu proses pipeline yang sedang berjalan.'));
+  }
+  if (stepId === 'scriptwriter') {
+    return Promise.reject(new Error('Langkah Penulis Naskah tidak dapat dilewati.'));
+  }
+
+  const updatedPendingRevision = run.pendingRevision
+    ? {
+        ...run.pendingRevision,
+        remainingAgents: run.pendingRevision.remainingAgents.filter((id) => id !== stepId),
+      }
+    : undefined;
+
   const skippedRun: PipelineRun = {
     ...run,
     status: 'running',
+    pendingRevision: updatedPendingRevision,
     steps: {
       ...run.steps,
       [stepId]: {

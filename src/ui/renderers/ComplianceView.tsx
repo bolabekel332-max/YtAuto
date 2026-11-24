@@ -1,8 +1,7 @@
 import React from 'react';
-import { ExternalLink, ShieldAlert, ShieldCheck } from 'lucide-react';
+import { ShieldAlert, ShieldCheck } from 'lucide-react';
 import type { ComplianceOutput } from '../../../shared/agentSchemas';
 import { label } from '../../config/labels';
-import { safeExternalUrl } from '../../utils/safeUrl';
 import { StatusBadge } from '../components/StatusBadge';
 import { Tooltip } from '../components/Tooltip';
 
@@ -13,7 +12,6 @@ export interface ComplianceViewProps {
 export const ComplianceView: React.FC<ComplianceViewProps> = ({ data }) => {
   const issues = data.issues ?? [];
   const similarityRisks = data.similarityRisks ?? [];
-  const sources = data.sources ?? [];
 
   return (
     <div className="space-y-5">
@@ -122,36 +120,6 @@ export const ComplianceView: React.FC<ComplianceViewProps> = ({ data }) => {
         </div>
       )}
 
-      {/* Sumber Kebijakan Nyata */}
-      {sources.length > 0 && (
-        <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4 space-y-2">
-          <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-300">
-            Sumber Rujukan Kebijakan ({sources.length})
-          </h4>
-          <ul className="space-y-1.5 text-xs">
-            {sources.map((src, idx) => {
-              const safeHref = safeExternalUrl(src.url);
-              return (
-                <li key={`${src.url}-${idx}`} className="flex items-start gap-2">
-                  <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-400" aria-hidden="true" />
-                  {safeHref ? (
-                    <a
-                      href={safeHref}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-sky-300 hover:text-sky-200 underline break-all"
-                    >
-                      {src.title || src.url}
-                    </a>
-                  ) : (
-                    <span className="text-slate-300 break-all">{src.title || src.url}</span>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
     </div>
   );
 };

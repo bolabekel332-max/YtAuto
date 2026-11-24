@@ -18,6 +18,7 @@ import {
   DailyCapError,
   getDailyCallUsage,
   rateLimiter,
+  strictRateLimiter,
 } from './auth';
 import { extractSafeErrorLogMeta, logCall } from './logger';
 import {
@@ -152,7 +153,7 @@ export function registerRoutes(app: Express): void {
     }
   });
 
-  api.post('/agent/test', async (req: Request, res: Response) => {
+  api.post('/agent/test', strictRateLimiter, async (req: Request, res: Response) => {
     const ac = bindRequestAbort(req, res);
     try {
       const parsed = AgentTestRequestSchema.safeParse(req.body);
@@ -190,7 +191,7 @@ export function registerRoutes(app: Express): void {
     }
   });
 
-  api.post('/providers/test', async (req: Request, res: Response) => {
+  api.post('/providers/test', strictRateLimiter, async (req: Request, res: Response) => {
     const start = Date.now();
     let providerIdForLog: ProviderId = 'mock';
     try {
@@ -263,7 +264,7 @@ export function registerRoutes(app: Express): void {
     res.json(getNousOAuthStatus());
   });
 
-  api.post('/oauth/nous/device/start', async (_req: Request, res: Response) => {
+  api.post('/oauth/nous/device/start', strictRateLimiter, async (_req: Request, res: Response) => {
     try {
       const started = await startNousDeviceFlow();
       res.json(started);
@@ -272,7 +273,7 @@ export function registerRoutes(app: Express): void {
     }
   });
 
-  api.post('/oauth/nous/device/poll', async (req: Request, res: Response) => {
+  api.post('/oauth/nous/device/poll', strictRateLimiter, async (req: Request, res: Response) => {
     try {
       const parsed = NousDevicePollRequestSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -289,11 +290,11 @@ export function registerRoutes(app: Express): void {
     }
   });
 
-  api.post('/oauth/nous/disconnect', (_req: Request, res: Response) => {
+  api.post('/oauth/nous/disconnect', strictRateLimiter, (_req: Request, res: Response) => {
     res.json(disconnectNousOAuth());
   });
 
-  api.get('/oauth/nous/models', async (_req: Request, res: Response) => {
+  api.get('/oauth/nous/models', strictRateLimiter, async (_req: Request, res: Response) => {
     try {
       const list = await fetchNousModels();
       res.json(list);
@@ -302,7 +303,7 @@ export function registerRoutes(app: Express): void {
     }
   });
 
-  api.get('/providers/:providerId/models', async (req: Request, res: Response) => {
+  api.get('/providers/:providerId/models', strictRateLimiter, async (req: Request, res: Response) => {
     try {
       const { providerId } = req.params;
       if (providerId === 'nous') {

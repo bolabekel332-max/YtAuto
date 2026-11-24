@@ -101,8 +101,11 @@ export async function withRetryAndFallback(
           if (
             err.code === 'output_truncated' ||
             err.code === 'capability_missing' ||
+            err.code === 'invalid_request' ||
             err.meta?.errorKind === 'authentication_error' ||
-            err.meta?.errorKind === 'permission_error'
+            err.meta?.errorKind === 'permission_error' ||
+            err.meta?.errorKind === 'invalid_request' ||
+            err.meta?.errorKind === 'not_found'
           ) {
             throw err;
           }

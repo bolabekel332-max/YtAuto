@@ -128,15 +128,22 @@ if (isMainModule) {
 
   createApp()
     .then((app) => {
-      const server = app.listen(env.port, '0.0.0.0', () => {
+      const server = app.listen(env.port, env.host, () => {
         console.info(
-          `Faceless Studio server (${env.isProd ? 'produksi' : 'pengembangan'}) berjalan di http://0.0.0.0:${env.port}`
+          `Faceless Studio server (${env.isProd ? 'produksi' : 'pengembangan'}) berjalan di http://${env.host}:${env.port}`
         );
       });
 
       const shutdown = (signal: string) => {
         console.info(`Menerima sinyal ${signal}, menutup server secara anggun...`);
+        const forceExitTimer = setTimeout(() => {
+          console.error('Penutupan server melewati batas 10 detik, keluar paksa.');
+          process.exit(1);
+        }, 10_000);
+        forceExitTimer.unref();
+
         server.close((closeErr) => {
+          clearTimeout(forceExitTimer);
           if (closeErr) {
             console.error(
               JSON.stringify({

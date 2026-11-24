@@ -7,6 +7,7 @@ import {
   ExportFileSchema,
   HistoryEntrySchema,
   KnowledgeBlockSchema,
+  normalizeComplianceVerdict,
   PipelineRunSchema,
   StyleProfileSchema,
   StyleReferenceSchema,
@@ -22,6 +23,8 @@ import {
 } from '../../shared/schemas';
 
 export const STORAGE_KEY = 'faceless_studio_state_v1';
+export const CORRUPT_BACKUP_KEY = 'faceless_studio_state_corrupt_backup_v1';
+export const MAX_IMPORT_BYTES = 15 * 1024 * 1024;
 
 export interface PersistedAppData {
   profile: ChannelProfile;
@@ -52,6 +55,26 @@ function isQuotaError(err: unknown): boolean {
   );
 }
 
+function backupCorruptRawPayload(raw: string): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(CORRUPT_BACKUP_KEY, raw);
+    }
+  } catch {
+    // Abaikan jika kuota penyimpanan penuh saat membuat cadangan korup
+  }
+}
+
+function normalizeRunForPersistence(run: PipelineRun): PipelineRun {
+  if (!run.complianceRounds || run.complianceRounds.length === 0) {
+    return run;
+  }
+  return {
+    ...run,
+    complianceRounds: run.complianceRounds.map(normalizeComplianceVerdict),
+  };
+}
+
 /**
  * Menyimpan state ke localStorage dengan try/catch.
  * Bila kuota penuh, membuang entri Riwayat tertua secara bertahap (maks HISTORY_MAX = 30).
@@ -60,7 +83,11 @@ function isQuotaError(err: unknown): boolean {
 export function save(data: PersistedAppData): { ok: boolean; warning?: string } {
   const normalized: PersistedAppData = {
     ...data,
-    history: data.history.slice(0, HISTORY_MAX),
+    activeRun: data.activeRun ? normalizeRunForPersistence(data.activeRun) : null,
+    history: data.history.slice(0, HISTORY_MAX).map((entry) => ({
+      ...entry,
+      run: normalizeRunForPersistence(entry.run),
+    })),
   };
   inMemoryFallback = normalized;
 
@@ -108,6 +135,7 @@ export function clearLocalData(): void {
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
       window.localStorage.removeItem(STORAGE_KEY);
+      window.localStorage.removeItem(CORRUPT_BACKUP_KEY);
     }
   } catch {
     // Abaikan jika browser memblokir localStorage
@@ -155,16 +183,20 @@ export function load(): { data: Partial<PersistedAppData> | null; warning?: stri
     try {
       parsedRaw = JSON.parse(raw);
     } catch {
+      backupCorruptRawPayload(raw);
       return {
         data: inMemoryFallback,
-        warning: 'Data tersimpan di localStorage rusak (JSON tidak valid); memuat konfigurasi awal.',
+        warning:
+          'Data tersimpan di localStorage rusak (JSON tidak valid); salinan mentah dicadangkan sementara dan konfigurasi awal dimuat.',
       };
     }
 
     if (!parsedRaw || typeof parsedRaw !== 'object' || Array.isArray(parsedRaw)) {
+      backupCorruptRawPayload(raw);
       return {
         data: inMemoryFallback,
-        warning: 'Format data tersimpan di localStorage tidak valid; memuat konfigurasi awal.',
+        warning:
+          'Format data tersimpan di localStorage tidak valid; salinan mentah dicadangkan sementara dan konfigurasi awal dimuat.',
       };
     }
 
@@ -192,7 +224,29 @@ export function load(): { data: Partial<PersistedAppData> | null; warning?: stri
     trySection('styleReferences', 'Referensi Gaya', z.array(StyleReferenceSchema));
     trySection('modelConfigs', 'Pengaturan Model', z.array(AgentModelConfigSchema));
     trySection('knowledge', 'Blok Pengetahuan', z.array(KnowledgeBlockSchema));
-    trySection('history', 'Riwayat Run', z.array(HistoryEntrySchema));
+
+    // Validasi Riwayat Run per entri agar satu entri cacat tidak menghapus entri lain yang sehat (F-20)
+    if (rec.history !== undefined) {
+      if (Array.isArray(rec.history)) {
+        const validHistory: HistoryEntry[] = [];
+        let droppedCount = 0;
+        for (const item of rec.history) {
+          const checkedItem = HistoryEntrySchema.safeParse(item);
+          if (checkedItem.success) {
+            validHistory.push(checkedItem.data);
+          } else {
+            droppedCount += 1;
+          }
+        }
+        clean.history = validHistory.slice(0, HISTORY_MAX);
+        if (droppedCount > 0) {
+          resetSections.push(`Riwayat Run (${droppedCount} entri tidak valid dilewati)`);
+        }
+      } else {
+        resetSections.push('Riwayat Run');
+      }
+    }
+
     trySection('activeRun', 'Run Aktif', PipelineRunSchema.nullable());
     trySection('lastIdeas', 'Hasil Riset Terakhir', AgentResultSchema);
     trySection('lastAudit', 'Hasil Audit Terakhir', AgentResultSchema);
@@ -200,11 +254,15 @@ export function load(): { data: Partial<PersistedAppData> | null; warning?: stri
     trySection('lastExportedAt', 'Waktu Ekspor', z.string());
     trySection('changesSinceExport', 'Penghitung Perubahan', z.number().int().min(0));
 
+    if (resetSections.length > 0) {
+      backupCorruptRawPayload(raw);
+    }
+
     return {
       data: clean,
       warning:
         resetSections.length > 0
-          ? `Sebagian data lokal rusak dan direset ke bawaan: ${resetSections.join(', ')}.`
+          ? `Sebagian data lokal bermasalah sehingga direset/dilewati (salinan mentah dicadangkan di browser): ${resetSections.join(', ')}.`
           : undefined,
     };
   } catch {
@@ -216,9 +274,14 @@ export function load(): { data: Partial<PersistedAppData> | null; warning?: stri
 }
 
 /**
- * Mengekspor seluruh data persisten (tanpa kode akses, tanpa kunci API, tanpa frame/video).
+ * Mengekspor seluruh data persisten (tanpa kunci API server, tanpa video, dan tanpa frame).
  */
 export function exportAll(data: PersistedAppData): ExportFile {
+  const normalizedHistory = data.history.slice(0, HISTORY_MAX).map((entry) => ({
+    ...entry,
+    run: normalizeRunForPersistence(entry.run),
+  }));
+
   const payload: ExportFile = {
     schemaVersion: EXPORT_SCHEMA_VERSION,
     exportedAt: new Date().toISOString(),
@@ -227,7 +290,7 @@ export function exportAll(data: PersistedAppData): ExportFile {
     styleReferences: data.styleReferences,
     modelConfigs: data.modelConfigs,
     knowledge: data.knowledge,
-    history: data.history.slice(0, HISTORY_MAX),
+    history: normalizedHistory,
     ...(data.lastIdeas ? { lastIdeas: data.lastIdeas } : {}),
     ...(data.lastAudit ? { lastAudit: data.lastAudit } : {}),
     ...(data.lastAnalysis ? { lastAnalysis: data.lastAnalysis } : {}),
@@ -242,6 +305,13 @@ export function exportAll(data: PersistedAppData): ExportFile {
 export function importAll(
   rawJsonText: string
 ): { ok: true; file: ExportFile } | { ok: false; error: string } {
+  if (rawJsonText.length > MAX_IMPORT_BYTES) {
+    return {
+      ok: false,
+      error: `Ukuran file impor melebihi batas maksimum (${Math.round(MAX_IMPORT_BYTES / (1024 * 1024))} MB).`,
+    };
+  }
+
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawJsonText);

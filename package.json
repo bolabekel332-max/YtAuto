@@ -4,17 +4,17 @@
   "version": "0.0.0",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.3"
   },
   "scripts": {
     "dev": "tsx server.ts",
     "start": "tsx server.ts --prod",
     "build": "vite build",
     "preview": "vite preview",
-    "clean": "rm -rf dist server.js",
+    "clean": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('server.js',{force:true});\"",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test server/serverCore.test.ts shared/agentSchemas.test.ts src/agents/dependencies.test.ts src/style/localMetrics.test.ts src/style/mergeProfiles.test.ts src/state/persistence.test.ts"
+    "test": "tsx --test server/serverCore.test.ts shared/agentSchemas.test.ts src/agents/dependencies.test.ts src/agents/pipeline.test.ts src/style/localMetrics.test.ts src/style/mergeProfiles.test.ts src/state/persistence.test.ts src/state/store.test.ts"
   },
   "dependencies": {
     "@google/genai": "^3.6.1",

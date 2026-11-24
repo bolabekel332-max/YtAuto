@@ -1,22 +1,16 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Calculator, Clapperboard, Loader2, Play, ShieldAlert, XCircle } from 'lucide-react';
 import { PIPELINE_STEP_IDS } from '../../../shared/constants';
 import type {
-  PipelineRun,
   PipelineStepId,
   Platform,
   RunInput,
 } from '../../../shared/schemas';
 import { estimateCalls } from '../../agents/dependencies';
-import {
-  isPipelineLocked,
-  resumeRun,
-  retryStep,
-  runPipeline,
-  skipStep,
-} from '../../agents/pipeline';
+import { isPipelineLocked } from '../../agents/pipeline';
 import { label } from '../../config/labels';
 import { PROFILE_OPTIONS } from '../../config/presets';
+import { usePipeline } from '../../state/pipelineContext';
 import { useStore } from '../../state/store';
 import { Card } from '../components/Card';
 import { SelectField } from '../components/FormFields';
@@ -29,6 +23,16 @@ import { AgentOutput } from '../renderers/AgentOutput';
 
 export const VideoStudio: React.FC = () => {
   const { state, dispatch } = useStore();
+  const {
+    isBusy,
+    pipelineError,
+    startPipeline,
+    resumePipeline,
+    retryPipelineStep,
+    skipPipelineStep,
+    cancelPipeline,
+    dismissPipelineError,
+  } = usePipeline();
 
   const isRefVisualActive =
     state.profile.visualStyle.mode === 'reference' ||
@@ -54,15 +58,7 @@ export const VideoStudio: React.FC = () => {
   );
 
   const [selectedStep, setSelectedStep] = useState<PipelineStepId>('scriptwriter');
-  const [isBusy, setIsBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-
-  useEffect(() => {
-    return () => {
-      abortRef.current?.abort();
-    };
-  }, []);
 
   // Sinkronkan draft input jika datang dari halaman Ide atau tombol Duplikasi
   useEffect(() => {
@@ -110,28 +106,14 @@ export const VideoStudio: React.FC = () => {
     }
   }, [activeRun, selectedStep]);
 
-  const makePipelineCtx = (signal?: AbortSignal) => ({
-    profile: state.profile,
-    styleProfiles: state.styleProfiles,
-    modelConfigs: state.modelConfigs,
-    knowledge: state.knowledge,
-    history: state.history,
-    signal,
-    onRunUpdate: (run: PipelineRun) => {
-      dispatch({ type: 'SET_ACTIVE_RUN', run });
-    },
-    onHistorySave: (entry: (typeof state.history)[number]) => {
-      dispatch({ type: 'UPSERT_HISTORY', entry });
-    },
-  });
-
   const handleCancelPipeline = () => {
-    abortRef.current?.abort();
+    cancelPipeline();
   };
 
   const handleStartPipeline = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
+    dismissPipelineError();
 
     if (!topic.trim()) {
       setFormError('Masukkan topik atau judul ide video terlebih dahulu.');
@@ -149,78 +131,33 @@ export const VideoStudio: React.FC = () => {
       styleProfileId: effectiveStyleProfileId || undefined,
     };
 
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setIsBusy(true);
     setSelectedStep(includeResearch ? 'researcher' : 'scriptwriter');
-    try {
-      await runPipeline(input, makePipelineCtx(controller.signal));
-    } catch (err) {
-      if (!(err instanceof DOMException && err.name === 'AbortError')) {
-        setFormError(
-          err instanceof Error ? err.message : 'Gagal memulai pipeline Studio Video.'
-        );
-      }
-    } finally {
-      abortRef.current = null;
-      setIsBusy(false);
-    }
+    await startPipeline(input);
   };
 
   const handleResume = async () => {
     if (!activeRun || isBusy || isPipelineLocked()) return;
     setFormError(null);
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setIsBusy(true);
-    try {
-      await resumeRun(activeRun, makePipelineCtx(controller.signal));
-    } catch (err) {
-      if (!(err instanceof DOMException && err.name === 'AbortError')) {
-        setFormError(err instanceof Error ? err.message : 'Gagal melanjutkan pipeline.');
-      }
-    } finally {
-      abortRef.current = null;
-      setIsBusy(false);
-    }
+    dismissPipelineError();
+    await resumePipeline(activeRun);
   };
 
   const handleRetryStep = async (stepId: PipelineStepId) => {
     if (!activeRun || isBusy || isPipelineLocked()) return;
     setFormError(null);
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setIsBusy(true);
+    dismissPipelineError();
     setSelectedStep(stepId);
-    try {
-      await retryStep(activeRun, stepId, makePipelineCtx(controller.signal));
-    } catch (err) {
-      if (!(err instanceof DOMException && err.name === 'AbortError')) {
-        setFormError(err instanceof Error ? err.message : 'Gagal mengulangi langkah.');
-      }
-    } finally {
-      abortRef.current = null;
-      setIsBusy(false);
-    }
+    await retryPipelineStep(activeRun, stepId);
   };
 
   const handleSkipStep = async (stepId: PipelineStepId) => {
     if (!activeRun || isBusy || isPipelineLocked()) return;
     setFormError(null);
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setIsBusy(true);
-    try {
-      await skipStep(activeRun, stepId, makePipelineCtx(controller.signal));
-    } catch (err) {
-      if (!(err instanceof DOMException && err.name === 'AbortError')) {
-        setFormError(err instanceof Error ? err.message : 'Gagal melewati langkah.');
-      }
-    } finally {
-      abortRef.current = null;
-      setIsBusy(false);
-    }
+    dismissPipelineError();
+    await skipPipelineStep(activeRun, stepId);
   };
+
+  const displayedError = formError ?? pipelineError;
 
   const historyEntryForActive = activeRun
     ? state.history.find((h) => h.id === activeRun.id)
@@ -332,12 +269,12 @@ export const VideoStudio: React.FC = () => {
               </p>
             </div>
 
-            {formError && (
+            {displayedError && (
               <div
                 role="alert"
                 className="rounded-xl border border-rose-500/40 bg-rose-950/60 px-4 py-3 text-xs text-rose-200"
               >
-                {formError}
+                {displayedError}
               </div>
             )}
 
@@ -502,6 +439,7 @@ export const VideoStudio: React.FC = () => {
           <HistoryPanel
             entries={state.history}
             activeRunId={activeRun?.id}
+            disabled={isBusy}
             onOpenEntry={(entry) => {
               dispatch({ type: 'SET_ACTIVE_RUN', run: structuredClone(entry.run) });
               setSelectedStep('orchestrator');
