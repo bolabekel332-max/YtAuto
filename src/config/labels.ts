@@ -72,6 +72,7 @@ export const LABELS: Record<string, string> = {
   gemini: 'Google Gemini',
   openrouter: 'OpenRouter',
   nous: 'Nous Portal',
+  apinex: 'APInex',
   custom: 'Provider Kustom',
 
   // JsonMode

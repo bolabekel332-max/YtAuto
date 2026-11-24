@@ -12,10 +12,14 @@ import {
   LogOut,
   Plus,
   RefreshCw,
+  SlidersHorizontal,
   Trash2,
+  Undo2,
   Zap,
 } from 'lucide-react';
 import {
+  CATALOG_PROVIDER_IDS,
+  type CatalogProviderId,
   JSON_MODES,
   MAX_FALLBACKS,
   MAX_TOKENS_LIMIT,
@@ -50,6 +54,12 @@ import {
 } from '../../api/client';
 import { label } from '../../config/labels';
 import {
+  AUTO_CONFIG_TIERS,
+  buildAutoConfigPlan,
+  type AutoConfigPlan,
+  type AutoConfigTier,
+} from '../../config/modelAutoConfig';
+import {
   defaultModelForProvider,
   detectModelPreset,
   MODEL_PRESETS,
@@ -57,6 +67,7 @@ import {
 } from '../../state/defaults';
 import { useStore } from '../../state/store';
 import { safeExternalUrl } from '../../utils/safeUrl';
+import { AutoConfigModal } from '../components/AutoConfigModal';
 import { Card } from '../components/Card';
 import { Tooltip } from '../components/Tooltip';
 import { AgentOutput } from '../renderers/AgentOutput';
@@ -84,54 +95,75 @@ export const ModelSettings: React.FC = () => {
   const [nousPollMsg, setNousPollMsg] = useState<string | null>(null);
   const [nousCopied, setNousCopied] = useState(false);
 
+  const isCatalogProvider = (id: ProviderId): id is CatalogProviderId =>
+    id === 'openrouter' || id === 'nous' || id === 'apinex';
+
   const [providerCatalogs, setProviderCatalogs] = useState<
-    Partial<Record<'openrouter' | 'nous', ProviderModelsResponse>>
+    Partial<Record<CatalogProviderId, ProviderModelsResponse>>
   >({});
   const [loadingCatalog, setLoadingCatalog] = useState<
-    Partial<Record<'openrouter' | 'nous', boolean>>
+    Partial<Record<CatalogProviderId, boolean>>
   >({});
-  const [catalogMsg, setCatalogMsg] = useState<Partial<Record<'openrouter' | 'nous', string>>>({});
+  const [catalogMsg, setCatalogMsg] = useState<Partial<Record<CatalogProviderId, string>>>({});
   const [onlyFreeByProvider, setOnlyFreeByProvider] = useState<
-    Record<'openrouter' | 'nous', boolean>
+    Record<CatalogProviderId, boolean>
   >({
     openrouter: true,
     nous: true,
+    apinex: true,
   });
   const [searchByProvider, setSearchByProvider] = useState<
-    Record<'openrouter' | 'nous', string>
+    Record<CatalogProviderId, string>
   >({
     openrouter: '',
     nous: '',
+    apinex: '',
   });
   const [catalogExpanded, setCatalogExpanded] = useState<
-    Record<'openrouter' | 'nous', boolean>
+    Record<CatalogProviderId, boolean>
   >({
     openrouter: false,
     nous: false,
+    apinex: false,
   });
 
+  const [autoConfigLoadingTier, setAutoConfigLoadingTier] = useState<AutoConfigTier | null>(null);
+  const [autoConfigPlan, setAutoConfigPlan] = useState<AutoConfigPlan | null>(null);
+  const [undoConfigs, setUndoConfigs] = useState<AgentModelConfig[] | null>(null);
+  const [lastAppliedTierLabel, setLastAppliedTierLabel] = useState<string | null>(null);
+  const [autoConfigBannerMsg, setAutoConfigBannerMsg] = useState<string | null>(null);
+
   const loadProviderCatalog = useCallback(
-    async (pid: 'openrouter' | 'nous', expandAfter = false) => {
+    async (
+      pid: CatalogProviderId,
+      expandAfter = false
+    ): Promise<ProviderModelsResponse | null> => {
       setLoadingCatalog((prev) => ({ ...prev, [pid]: true }));
       try {
         const res = await getProviderModels(pid);
-        setProviderCatalogs((prev) => ({ ...prev, [pid]: res }));
+        const models = Array.isArray(res?.models) ? res.models : [];
+        const normalizedCatalog: ProviderModelsResponse = { ...res, models };
+        setProviderCatalogs((prev) => ({ ...prev, [pid]: normalizedCatalog }));
         if (expandAfter) {
           setCatalogExpanded((prev) => ({ ...prev, [pid]: true }));
         }
-        const freeCount = res.models.filter((m) => m.isFree).length;
+        const freeCount = models.filter((m) => m.isFree).length;
+        const catalogSummary = `${freeCount} model gratis dari ${models.length} total model aktif dimuat.`;
         setCatalogMsg((prev) => ({
           ...prev,
-          [pid]: `${freeCount} model gratis dari ${res.models.length} total model aktif dimuat.`,
+          [pid]: catalogSummary,
         }));
+        return normalizedCatalog;
       } catch (err) {
+        const catalogErrMsg =
+          err instanceof Error
+            ? `Gagal memuat katalog model: ${err.message}`
+            : 'Gagal memuat katalog model.';
         setCatalogMsg((prev) => ({
           ...prev,
-          [pid]:
-            err instanceof Error
-              ? `Gagal memuat katalog model: ${err.message}`
-              : 'Gagal memuat katalog model.',
+          [pid]: catalogErrMsg,
         }));
+        return null;
       } finally {
         setLoadingCatalog((prev) => ({ ...prev, [pid]: false }));
       }
@@ -152,10 +184,11 @@ export const ModelSettings: React.FC = () => {
         if (oauthRes) setNousOAuth(oauthRes);
 
         if (withCatalogs) {
-          const orReady = res.providers.some((p) => p.id === 'openrouter' && p.available);
-          const nousReady = res.providers.some((p) => p.id === 'nous' && p.available);
-          if (orReady) void loadProviderCatalog('openrouter');
-          if (nousReady) void loadProviderCatalog('nous');
+          for (const cid of CATALOG_PROVIDER_IDS) {
+            if (res.providers.some((p) => p.id === cid && p.available)) {
+              void loadProviderCatalog(cid);
+            }
+          }
         }
       } catch (err) {
         setStatusError(
@@ -184,6 +217,9 @@ export const ModelSettings: React.FC = () => {
         try {
           const res = await pollNousDeviceAuth(nousFlow.flowId);
           if (cancelled) return;
+          if (!res || typeof res !== 'object') {
+            throw new Error('Respons status OAuth Nous tidak valid.');
+          }
           if (res.status === 'connected') {
             setNousFlow(null);
             setNousPollMsg(res.message || 'Akun Nous Portal berhasil terhubung via OAuth.');
@@ -254,7 +290,7 @@ export const ModelSettings: React.FC = () => {
     }
   };
 
-  const applyModelToAllAgents = (providerId: 'openrouter' | 'nous', modelId: string) => {
+  const applyModelToAllAgents = (providerId: CatalogProviderId, modelId: string) => {
     const nextConfigs = state.modelConfigs.map((c) => ({
       ...c,
       providerId,
@@ -286,19 +322,38 @@ export const ModelSettings: React.FC = () => {
   const handleTestProvider = async (providerId: ProviderId) => {
     setTestingProviderId(providerId);
     const matchingCfg = state.modelConfigs.find((c) => c.providerId === providerId);
-    const model = matchingCfg?.model ?? defaultModelForProvider(providerId);
+    const catalogList = isCatalogProvider(providerId)
+      ? providerCatalogs[providerId]?.models
+      : undefined;
+    const freeCatalogModel = catalogList?.find((m) => m.isFree)?.id;
+    const catalogFallback =
+      freeCatalogModel ?? catalogList?.[0]?.id;
+    const model =
+      isCatalogProvider(providerId)
+        ? freeCatalogModel ?? matchingCfg?.model ?? catalogFallback ?? defaultModelForProvider(providerId)
+        : matchingCfg?.model ?? catalogFallback ?? defaultModelForProvider(providerId);
     try {
       const res = await testProvider({ providerId, model });
+      const msgText =
+        res && typeof res.message === 'string' && res.message.length > 0
+          ? res.message
+          : `Koneksi ${label(providerId)} berhasil.`;
+      const latencyText =
+        res && typeof res.latencyMs === 'number' && Number.isFinite(res.latencyMs)
+          ? ` (${Math.round(res.latencyMs)} ms)`
+          : '';
+      const finalMsg = `${msgText}${latencyText}`;
       setProviderTestMsg((prev) => ({
         ...prev,
-        [providerId]: `${res.message} (${Math.round(res.latencyMs)} ms)`,
+        [providerId]: finalMsg,
       }));
       void fetchStatus();
     } catch (err) {
+      const errMsg =
+        err instanceof Error ? `Gagal: ${err.message}` : 'Gagal menguji koneksi provider.';
       setProviderTestMsg((prev) => ({
         ...prev,
-        [providerId]:
-          err instanceof Error ? `Gagal: ${err.message}` : 'Gagal menguji koneksi provider.',
+        [providerId]: errMsg,
       }));
     } finally {
       setTestingProviderId(null);
@@ -316,16 +371,108 @@ export const ModelSettings: React.FC = () => {
         knowledge: state.knowledge,
         config: cfg,
       });
+      if (!result || typeof result !== 'object') {
+        throw new Error('Respons hasil tes agent dari server tidak valid.');
+      }
       setAgentTestResults((prev) => ({ ...prev, [cfg.agentId]: result }));
       void fetchStatus();
     } catch (err) {
+      const errMsg = err instanceof Error ? err.message : 'Tes agent gagal.';
       setAgentTestErrors((prev) => ({
         ...prev,
-        [cfg.agentId]: err instanceof Error ? err.message : 'Tes agent gagal.',
+        [cfg.agentId]: errMsg,
       }));
     } finally {
       setTestingAgentId(null);
     }
+  };
+
+  const handleOpenAutoConfig = async (tier: AutoConfigTier) => {
+    setAutoConfigLoadingTier(tier);
+    setAutoConfigBannerMsg(null);
+    try {
+      let currentStatus = statusData;
+      if (!currentStatus) {
+        currentStatus = await getProviderStatus();
+        setStatusData(currentStatus);
+      }
+
+      const latestCatalogs: Partial<Record<CatalogProviderId, ProviderModelsResponse>> = {
+        ...providerCatalogs,
+      };
+      const toFetch = CATALOG_PROVIDER_IDS.filter((pid) => {
+        const providerAvailable = currentStatus?.providers.some(
+          (p) => p.id === pid && p.available
+        );
+        return Boolean(providerAvailable && !latestCatalogs[pid]);
+      });
+
+      if (toFetch.length > 0) {
+        const loaded = await Promise.all(
+          toFetch.map(async (pid) => ({
+            pid,
+            catalog: await loadProviderCatalog(pid, false),
+          }))
+        );
+        for (const entry of loaded) {
+          if (entry.catalog) {
+            latestCatalogs[entry.pid] = entry.catalog;
+          }
+        }
+      }
+
+      const plan = buildAutoConfigPlan({
+        tier,
+        currentConfigs: state.modelConfigs,
+        providers: currentStatus.providers,
+        catalogs: latestCatalogs,
+      });
+      setAutoConfigPlan(plan);
+    } catch (err) {
+      setAutoConfigBannerMsg(
+        err instanceof Error
+          ? `Gagal menyusun pratinjau auto-konfigurasi: ${err.message}`
+          : 'Gagal menyusun pratinjau auto-konfigurasi.'
+      );
+    } finally {
+      setAutoConfigLoadingTier(null);
+    }
+  };
+
+  const handleApplyAutoConfig = (selectedAgentIds: AgentId[]) => {
+    if (!autoConfigPlan) return;
+    const selectedSet = new Set(selectedAgentIds);
+    const recommendationMap = new Map(
+      autoConfigPlan.items.map((item) => [item.agentId, item.nextConfig])
+    );
+    const previousSnapshot = state.modelConfigs.map((cfg) => ({
+      ...cfg,
+      fallbackModels: [...cfg.fallbackModels],
+    }));
+
+    const nextConfigs = state.modelConfigs.map((cfg) => {
+      if (!selectedSet.has(cfg.agentId)) return cfg;
+      return recommendationMap.get(cfg.agentId) ?? cfg;
+    });
+
+    const tierInfo = AUTO_CONFIG_TIERS.find((t) => t.id === autoConfigPlan.tier);
+    setUndoConfigs(previousSnapshot);
+    setLastAppliedTierLabel(tierInfo?.title ?? autoConfigPlan.tier);
+    setAutoConfigBannerMsg(
+      `Konfigurasi mode ${tierInfo?.title ?? autoConfigPlan.tier} diterapkan ke ${selectedAgentIds.length} agent.`
+    );
+    dispatch({ type: 'SET_MODEL_CONFIGS', configs: nextConfigs });
+    setAutoConfigPlan(null);
+  };
+
+  const handleUndoAutoConfig = () => {
+    if (!undoConfigs) return;
+    dispatch({ type: 'SET_MODEL_CONFIGS', configs: undoConfigs });
+    setAutoConfigBannerMsg(
+      `Perubahan auto-konfigurasi (${lastAppliedTierLabel ?? 'terakhir'}) dibatalkan dan setelan sebelumnya dipulihkan.`
+    );
+    setUndoConfigs(null);
+    setLastAppliedTierLabel(null);
   };
 
   return (
@@ -482,36 +629,38 @@ export const ModelSettings: React.FC = () => {
                     </button>
                   )}
 
-                  {(p.id === 'openrouter' || p.id === 'nous') && p.available && (
-                    <button
-                      type="button"
-                      disabled={Boolean(loadingCatalog[p.id])}
-                      onClick={() => {
-                        const pid = p.id as 'openrouter' | 'nous';
-                        if (providerCatalogs[pid] && catalogExpanded[pid]) {
-                          void loadProviderCatalog(pid, true);
-                        } else if (providerCatalogs[pid]) {
-                          setCatalogExpanded((prev) => ({ ...prev, [pid]: true }));
-                        } else {
-                          void loadProviderCatalog(pid, true);
-                        }
-                      }}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-50"
-                    >
-                      {loadingCatalog[p.id as 'openrouter' | 'nous'] ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                      ) : (
-                        <RefreshCw className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
-                      )}
-                      <span>
-                        {providerCatalogs[p.id as 'openrouter' | 'nous']
-                          ? catalogExpanded[p.id as 'openrouter' | 'nous']
-                            ? 'Perbarui Model'
-                            : 'Pilih Model Gratis'
-                          : 'Muat Model Gratis'}
-                      </span>
-                    </button>
-                  )}
+                  {isCatalogProvider(p.id) && p.available && (() => {
+                    const pid = p.id;
+                    return (
+                      <button
+                        type="button"
+                        disabled={Boolean(loadingCatalog[pid])}
+                        onClick={() => {
+                          if (providerCatalogs[pid] && catalogExpanded[pid]) {
+                            void loadProviderCatalog(pid, true);
+                          } else if (providerCatalogs[pid]) {
+                            setCatalogExpanded((prev) => ({ ...prev, [pid]: true }));
+                          } else {
+                            void loadProviderCatalog(pid, true);
+                          }
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                      >
+                        {loadingCatalog[pid] ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <RefreshCw className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
+                        )}
+                        <span>
+                          {providerCatalogs[pid]
+                            ? catalogExpanded[pid]
+                              ? 'Perbarui Model'
+                              : 'Pilih Model Gratis'
+                            : 'Muat Model Gratis'}
+                        </span>
+                      </button>
+                    );
+                  })()}
 
                   {p.id === 'nous' && nousOAuth?.authMethod === 'oauth' && (
                     <button
@@ -589,17 +738,17 @@ export const ModelSettings: React.FC = () => {
                 <p className="text-[11px] text-amber-200">{nousPollMsg}</p>
               )}
 
-              {(p.id === 'openrouter' || p.id === 'nous') &&
-                catalogMsg[p.id as 'openrouter' | 'nous'] && (
+              {isCatalogProvider(p.id) &&
+                catalogMsg[p.id] && (
                   <p className="text-[11px] text-emerald-300/90">
-                    {catalogMsg[p.id as 'openrouter' | 'nous']}
+                    {catalogMsg[p.id]}
                   </p>
                 )}
 
-              {(p.id === 'openrouter' || p.id === 'nous') &&
-                catalogExpanded[p.id as 'openrouter' | 'nous'] &&
-                providerCatalogs[p.id as 'openrouter' | 'nous'] && (() => {
-                  const pid = p.id as 'openrouter' | 'nous';
+              {isCatalogProvider(p.id) &&
+                catalogExpanded[p.id] &&
+                providerCatalogs[p.id] && (() => {
+                  const pid = p.id;
                   const cat = providerCatalogs[pid]!;
                   const onlyFree = onlyFreeByProvider[pid];
                   const q = searchByProvider[pid].trim().toLowerCase();
@@ -722,6 +871,63 @@ export const ModelSettings: React.FC = () => {
         </div>
       </Card>
 
+      {/* Auto-Konfigurasi Model Cerdas */}
+      <Card
+        title="Auto-Konfigurasi Model Cerdas"
+        description="Pilih tingkat kecerdasan model untuk membagi 8 agent secara otomatis berdasarkan provider aktif (termasuk model berbayar maupun gratis yang relevan), lalu tinjau hasilnya sebelum diterapkan."
+        tooltip="Sistem mencocokkan syarat tiap agent (Pencarian Web untuk Periset, multimodal untuk Analis Gaya Visual, serta pemisahan model Kepatuhan vs Penulis Naskah) dengan daftar model aktif di server."
+      >
+        <div className="space-y-4">
+          <div className="grid gap-3 md:grid-cols-3">
+            {AUTO_CONFIG_TIERS.map((tier) => {
+              const isLoadingThisTier = autoConfigLoadingTier === tier.id;
+              return (
+                <button
+                  key={tier.id}
+                  type="button"
+                  disabled={autoConfigLoadingTier !== null}
+                  onClick={() => void handleOpenAutoConfig(tier.id)}
+                  className="flex flex-col items-start justify-between gap-2 rounded-xl border border-slate-700/90 bg-slate-950/80 p-4 text-left transition-colors hover:border-sky-500/60 hover:bg-slate-900 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                >
+                  <div className="flex w-full items-center justify-between gap-2">
+                    <span className="text-sm font-semibold text-slate-100">{tier.title}</span>
+                    {isLoadingThisTier ? (
+                      <Loader2 className="h-4 w-4 animate-spin text-sky-400" aria-hidden="true" />
+                    ) : (
+                      <SlidersHorizontal className="h-4 w-4 text-sky-400" aria-hidden="true" />
+                    )}
+                  </div>
+                  <span className="text-xs font-medium text-sky-300">{tier.subtitle}</span>
+                  <p className="text-[11px] leading-relaxed text-slate-400">{tier.strategy}</p>
+                  <span className="pt-1 text-[11px] font-semibold text-sky-200">
+                    {isLoadingThisTier ? 'Menyusun pratinjau...' : 'Buat Pratinjau Konfigurasi →'}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {autoConfigBannerMsg && (
+            <div
+              role="status"
+              className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-500/40 bg-emerald-950/40 px-4 py-2.5 text-xs text-emerald-100"
+            >
+              <span>{autoConfigBannerMsg}</span>
+              {undoConfigs && (
+                <button
+                  type="button"
+                  onClick={handleUndoAutoConfig}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/50 bg-emerald-500/15 px-3 py-1.5 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300"
+                >
+                  <Undo2 className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Batalkan Perubahan Terakhir (Undo)</span>
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </Card>
+
       {/* Preset Cepat Provider Semua Agent */}
       <Card
         title="Preset Cepat Konfigurasi Model"
@@ -791,13 +997,13 @@ export const ModelSettings: React.FC = () => {
           }
           if (supportsSearch && cfg.useSearch && providerInfo && !providerInfo.capabilities.search) {
             agentWarnings.push(
-              `Pencarian Web aktif, tetapi ${providerInfo.name} tidak mendukung pencarian web langsung. Nonaktifkan Pencarian Web atau pilih Gemini / OpenRouter.`
+              `Pencarian Web aktif, tetapi ${providerInfo.name} tidak mendukung pencarian web langsung. Nonaktifkan Pencarian Web atau pilih Gemini / OpenRouter / APInex.`
             );
           }
           if (cfg.agentId === 'style_analyst' && providerInfo) {
             if (!providerInfo.capabilities.image) {
               agentWarnings.push(
-                `${providerInfo.name} tidak mendukung input Gambar/Frame untuk analisis screenshot atau video lokal. Gunakan Deskripsi Manual atau alihkan ke Gemini / OpenRouter.`
+                `${providerInfo.name} tidak mendukung input Gambar/Frame untuk analisis screenshot atau video lokal. Gunakan Deskripsi Manual atau alihkan ke Gemini / OpenRouter / APInex.`
               );
             } else if (!providerInfo.capabilities.video) {
               agentWarnings.push(
@@ -898,9 +1104,9 @@ export const ModelSettings: React.FC = () => {
                       }
                       className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-100"
                     />
-                    {(cfg.providerId === 'openrouter' || cfg.providerId === 'nous') &&
+                    {isCatalogProvider(cfg.providerId) &&
                       providerCatalogs[cfg.providerId] && (() => {
-                        const catalogModels = providerCatalogs[cfg.providerId as 'openrouter' | 'nous']!.models;
+                        const catalogModels = providerCatalogs[cfg.providerId as CatalogProviderId]!.models;
                         const freeList = catalogModels.filter((m) => m.isFree);
                         const paidList = catalogModels.filter((m) => !m.isFree).slice(0, 60);
                         return (
@@ -1154,10 +1360,9 @@ export const ModelSettings: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => {
-                          const cat =
-                            cfg.providerId === 'openrouter' || cfg.providerId === 'nous'
-                              ? providerCatalogs[cfg.providerId]?.models
-                              : undefined;
+                          const cat = isCatalogProvider(cfg.providerId)
+                            ? providerCatalogs[cfg.providerId]?.models
+                            : undefined;
                           const nextFree = cat?.find(
                             (m) =>
                               m.isFree &&
@@ -1248,6 +1453,12 @@ export const ModelSettings: React.FC = () => {
           );
         })}
       </div>
+
+      <AutoConfigModal
+        plan={autoConfigPlan}
+        onClose={() => setAutoConfigPlan(null)}
+        onApply={handleApplyAutoConfig}
+      />
     </div>
   );
 };

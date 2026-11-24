@@ -33,6 +33,13 @@ export interface RetryAttemptResult {
   modelUsed: string;
 }
 
+function getFreeFallbackModel(providerId: string): string | undefined {
+  if (providerId === 'apinex') return 'free/gemini-4-hydrogen';
+  if (providerId === 'openrouter') return 'nvidia/nemotron-3-ultra-550b-a55b:free';
+  if (providerId === 'nous') return 'qwen/qwen4-max:free';
+  return undefined;
+}
+
 /**
  * Aturan retry dan fallback (BP 9.4 / NFR-02):
  * 1. Error 429 atau 5xx (retryable): retry dengan jeda + jitter maks 2x per model.
@@ -97,6 +104,16 @@ export async function withRetryAndFallback(
           });
         }
         if (err instanceof ProviderCallError) {
+          if (err.meta?.errorKind === 'insufficient_balance') {
+            const freeFallback = getFreeFallbackModel(provider.id);
+            if (freeFallback && !modelsToTry.includes(freeFallback)) {
+              modelsToTry.push(freeFallback);
+              console.warn(
+                `[Auto-Fallback] Saldo tidak mencukupi (402) untuk model ${model} pada provider ${provider.id}. Berpindah otomatis ke model gratis ${freeFallback}.`
+              );
+              break;
+            }
+          }
           // Hentikan langsung pada error yang tidak dapat diselesaikan dengan fallback model
           if (
             err.code === 'output_truncated' ||

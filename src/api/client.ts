@@ -1,3 +1,4 @@
+import type { CatalogProviderId } from '../../shared/constants';
 import type {
   AgentRunRequest,
   AgentRunResponse,
@@ -94,6 +95,14 @@ async function requestJson<T>(
     throw new ClientApiError(response.status, code, message);
   }
 
+  if (parsedBody === null || typeof parsedBody !== 'object') {
+    throw new ClientApiError(
+      response.status,
+      'provider_error',
+      'Respons server kosong atau bukan format JSON yang valid.'
+    );
+  }
+
   return parsedBody as T;
 }
 
@@ -175,7 +184,7 @@ export function getNousModels(): Promise<NousModelsResponse> {
 }
 
 export function getProviderModels(
-  providerId: 'openrouter' | 'nous'
+  providerId: CatalogProviderId
 ): Promise<ProviderModelsResponse> {
   return requestJson<ProviderModelsResponse>(`/api/providers/${providerId}/models`, {
     method: 'GET',

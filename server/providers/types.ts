@@ -49,6 +49,7 @@ export interface LLMProvider {
 export type ProviderErrorKind =
   | 'invalid_request'
   | 'authentication_error'
+  | 'insufficient_balance'
   | 'permission_error'
   | 'not_found'
   | 'rate_limit'
@@ -113,7 +114,7 @@ export function sanitizeErrorMessage(raw: unknown, maxLen = 280): string {
       '$1[REDACTED]'
     )
     .replace(/\bAIza[0-9A-Za-z_-]{10,}\b/g, '[REDACTED_KEY]')
-    .replace(/\bsk-(?:or-v1-|nous-)?[0-9A-Za-z_-]{10,}\b/g, '[REDACTED_KEY]')
+    .replace(/\bsk-(?:or-v1-|nous-|apx-)?[0-9A-Za-z_-]{10,}\b/g, '[REDACTED_KEY]')
     .replace(/\s+/g, ' ')
     .trim();
 

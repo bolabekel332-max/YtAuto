@@ -161,6 +161,11 @@ export interface ProviderModelItem {
   name?: string;
   isFree: boolean;
   ownedBy?: string;
+  contextLength?: number;
+  inputModalities?: string[];
+  supportsStructuredOutput?: boolean;
+  promptPricePerMillion?: number;
+  completionPricePerMillion?: number;
 }
 
 export interface ProviderModelsResponse {

@@ -30,7 +30,10 @@ export const JSON_MODES = ['json_schema', 'json_object', 'prompt_only'] as const
 
 export const SEARCH_MODES = ['two_step', 'single'] as const;
 
-export const PROVIDER_IDS = ['mock', 'gemini', 'openrouter', 'nous', 'custom'] as const;
+export const PROVIDER_IDS = ['mock', 'gemini', 'openrouter', 'nous', 'apinex', 'custom'] as const;
+
+export const CATALOG_PROVIDER_IDS = ['openrouter', 'nous', 'apinex'] as const;
+export type CatalogProviderId = (typeof CATALOG_PROVIDER_IDS)[number];
 
 export const CERTAINTY_LEVELS = [
   'official',

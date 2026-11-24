@@ -331,8 +331,10 @@ export async function fetchOpenRouterModels(
       data?: Array<{
         id?: unknown;
         name?: unknown;
+        context_length?: unknown;
+        supported_parameters?: unknown;
         pricing?: { prompt?: unknown; completion?: unknown };
-        architecture?: { output_modalities?: unknown };
+        architecture?: { input_modalities?: unknown; output_modalities?: unknown };
       }>;
     };
 
@@ -345,13 +347,22 @@ export async function fetchOpenRouterModels(
       return false;
     };
 
+    const parsePricePerMillion = (val: unknown): number | undefined => {
+      const n = typeof val === 'number' ? val : typeof val === 'string' && val.trim() ? Number(val.trim()) : NaN;
+      if (!Number.isFinite(n) || n < 0) return undefined;
+      return Math.round(n * 1_000_000 * 10000) / 10000;
+    };
+
     const models: ProviderModelItem[] = [];
     for (const item of body.data ?? []) {
       if (!item || typeof item.id !== 'string' || item.id.trim().length === 0) continue;
       const id = item.id.trim();
       const isSuffixFree = id.toLowerCase().endsWith(':free');
       const outputMods = Array.isArray(item.architecture?.output_modalities)
-        ? item.architecture.output_modalities
+        ? item.architecture.output_modalities.filter((m): m is string => typeof m === 'string')
+        : undefined;
+      const inputMods = Array.isArray(item.architecture?.input_modalities)
+        ? item.architecture.input_modalities.filter((m): m is string => typeof m === 'string')
         : undefined;
       const isTextChatOutput =
         !outputMods || (outputMods.includes('text') && !outputMods.includes('audio'));
@@ -361,10 +372,30 @@ export async function fetchOpenRouterModels(
         isExplicitZero(item.pricing?.prompt) &&
         isExplicitZero(item.pricing?.completion);
       const isFree = isSuffixFree || isZeroPriceText;
+      const contextLength =
+        typeof item.context_length === 'number' && Number.isFinite(item.context_length) && item.context_length > 0
+          ? item.context_length
+          : undefined;
+      const supportedParams = Array.isArray(item.supported_parameters)
+        ? item.supported_parameters.filter((p): p is string => typeof p === 'string')
+        : undefined;
+      const supportsStructuredOutput = supportedParams
+        ? supportedParams.includes('structured_outputs') || supportedParams.includes('response_format')
+        : undefined;
+
       models.push({
         id,
         name: typeof item.name === 'string' ? item.name.trim() : undefined,
         isFree,
+        ...(contextLength !== undefined ? { contextLength } : {}),
+        ...(inputMods && inputMods.length > 0 ? { inputModalities: inputMods } : {}),
+        ...(supportsStructuredOutput !== undefined ? { supportsStructuredOutput } : {}),
+        ...(parsePricePerMillion(item.pricing?.prompt) !== undefined
+          ? { promptPricePerMillion: parsePricePerMillion(item.pricing?.prompt) }
+          : {}),
+        ...(parsePricePerMillion(item.pricing?.completion) !== undefined
+          ? { completionPricePerMillion: parsePricePerMillion(item.pricing?.completion) }
+          : {}),
       });
     }
 

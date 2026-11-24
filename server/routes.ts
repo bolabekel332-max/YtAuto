@@ -28,6 +28,7 @@ import {
   pollNousDeviceFlow,
   startNousDeviceFlow,
 } from './providers/nousAuth';
+import { fetchApinexModels } from './providers/apinex';
 import { fetchOpenRouterModels } from './providers/openrouter';
 import { getProvider, listStatus } from './providers/registry';
 import { ProviderCallError, sanitizeErrorMessage } from './providers/types';
@@ -314,10 +315,14 @@ export function registerRoutes(app: Express): void {
         res.json(await fetchOpenRouterModels());
         return;
       }
+      if (providerId === 'apinex') {
+        res.json(await fetchApinexModels());
+        return;
+      }
       throw new AppApiError(
         'invalid_request',
         400,
-        'Daftar model dinamis saat ini tersedia untuk provider OpenRouter dan Nous Portal.'
+        'Daftar model dinamis saat ini tersedia untuk provider OpenRouter, Nous Portal, dan APInex.'
       );
     } catch (err) {
       handleRouteError(res, err);

@@ -8,6 +8,7 @@ export const DEFAULT_GEMINI_MODEL = 'gemini-4-hydrogen';
 export const DEFAULT_MOCK_MODEL = 'mock-sim-v1';
 export const DEFAULT_OPENROUTER_MODEL = 'nvidia/nemotron-3-ultra-550b-a55b:free';
 export const DEFAULT_NOUS_MODEL = 'qwen/qwen4-max:free';
+export const DEFAULT_APINEX_MODEL = 'free/gemini-4-hydrogen';
 export const DEFAULT_CUSTOM_MODEL = 'default-model';
 
 /**
@@ -38,6 +39,8 @@ export function createDefaultModelConfigs(
       ? DEFAULT_OPENROUTER_MODEL
       : providerId === 'nous'
       ? DEFAULT_NOUS_MODEL
+      : providerId === 'apinex'
+      ? DEFAULT_APINEX_MODEL
       : providerId === 'custom'
       ? DEFAULT_CUSTOM_MODEL
       : DEFAULT_GEMINI_MODEL;
@@ -84,6 +87,8 @@ export function defaultModelForProvider(providerId: ProviderId): string {
       return DEFAULT_OPENROUTER_MODEL;
     case 'nous':
       return DEFAULT_NOUS_MODEL;
+    case 'apinex':
+      return DEFAULT_APINEX_MODEL;
     case 'custom':
       return DEFAULT_CUSTOM_MODEL;
   }

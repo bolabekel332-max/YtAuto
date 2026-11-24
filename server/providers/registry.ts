@@ -1,6 +1,7 @@
 import type { ProviderId } from '../../shared/schemas';
 import type { ProviderStatus } from '../../shared/api';
 import { getEnv } from '../config';
+import { apinexProvider } from './apinex';
 import { customProvider } from './custom';
 import { geminiProvider } from './gemini';
 import { mockProvider } from './mock';
@@ -13,6 +14,7 @@ const PROVIDERS: Record<ProviderId, LLMProvider> = {
   gemini: geminiProvider,
   openrouter: openrouterProvider,
   nous: nousProvider,
+  apinex: apinexProvider,
   custom: customProvider,
 };
 
@@ -30,6 +32,7 @@ export function listStatus(): ProviderStatus[] {
     }
     if (provider.id === 'openrouter') keyDetected = env.openrouterApiKey.length > 0;
     if (provider.id === 'nous') keyDetected = provider.isAvailable();
+    if (provider.id === 'apinex') keyDetected = env.apinexApiKey.length > 0;
     if (provider.id === 'custom') keyDetected = env.customApiKey.length > 0;
 
     return {

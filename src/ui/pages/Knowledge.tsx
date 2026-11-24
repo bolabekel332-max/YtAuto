@@ -1,12 +1,22 @@
-import React, { useState } from 'react';
-import { AlertTriangle, BookOpen, CalendarCheck, CheckCircle2, Pencil } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import {
+  AlertTriangle,
+  BookOpen,
+  CalendarCheck,
+  CheckCircle2,
+  Database,
+  Globe,
+  Info,
+  Pencil,
+  ShieldCheck,
+} from 'lucide-react';
 import { CERTAINTY_LEVELS, KNOWLEDGE_STALE_DAYS } from '../../../shared/constants';
 import type { CertaintyLevel, KnowledgeBlock } from '../../../shared/schemas';
 import { label } from '../../config/labels';
+import { buildKnowledgeTransparencyReport } from '../../knowledge/transparency';
 import { useStore } from '../../state/store';
 import { Card } from '../components/Card';
 import { StatusBadge } from '../components/StatusBadge';
-import { Tooltip } from '../components/Tooltip';
 
 function daysSince(isoDate: string): number {
   const parsed = Date.parse(isoDate);
@@ -73,6 +83,11 @@ export const Knowledge: React.FC = () => {
     (b) => daysSince(b.verifiedAt) > KNOWLEDGE_STALE_DAYS
   ).length;
 
+  const transparency = useMemo(
+    () => buildKnowledgeTransparencyReport(state.knowledge, state.modelConfigs),
+    [state.knowledge, state.modelConfigs]
+  );
+
   return (
     <div className="space-y-6">
       {staleCount > 0 && (
@@ -87,6 +102,146 @@ export const Knowledge: React.FC = () => {
           </p>
         </div>
       )}
+
+      <Card
+        title="Transparansi Pengetahuan"
+        description="Asal data aktual yang dibaca oleh setiap agent—termasuk ringkasan laporan industri lokal, status pencarian web server, dan keterbatasan integrasi eksternal."
+        tooltip="Daftar ini membaca konfigurasi agent dan blok pengetahuan aktif secara langsung agar Anda tahu sumber mana yang benar-benar dipakai atau tidak terhubung."
+      >
+        <div className="space-y-5">
+          {/* Ringkasan Sumber Eksternal */}
+          <div className="space-y-2.5">
+            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-300">
+              <Database className="h-3.5 w-3.5 text-sky-400 shrink-0" aria-hidden="true" />
+              <span>Status Sumber Pengetahuan &amp; Integrasi Eksternal</span>
+            </h3>
+            <div className="grid gap-3 md:grid-cols-2">
+              {transparency.externalSources.map((src) => {
+                const badgeStyle =
+                  src.status === 'active'
+                    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                    : src.status === 'conditional'
+                    ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+                    : 'border-slate-700 bg-slate-900 text-slate-400';
+
+                return (
+                  <div
+                    key={src.id}
+                    className="rounded-xl border border-slate-800 bg-slate-950/70 p-3.5 space-y-1.5"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-slate-100">{src.name}</span>
+                      <span
+                        className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-medium ${badgeStyle}`}
+                      >
+                        {src.statusLabel}
+                      </span>
+                    </div>
+                    <p className="text-xs leading-relaxed text-slate-400">{src.description}</p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Pemetaan Sumber per Agent */}
+          <div className="space-y-2.5">
+            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-300">
+              <ShieldCheck className="h-3.5 w-3.5 text-sky-400 shrink-0" aria-hidden="true" />
+              <span>Sumber Data yang Dibaca Setiap Agent ({transparency.agents.length} Agent)</span>
+            </h3>
+            <div className="grid gap-3 md:grid-cols-2">
+              {transparency.agents.map((agent) => {
+                const searchBadgeStyle =
+                  agent.searchStatus === 'active'
+                    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                    : agent.searchStatus === 'disabled' || agent.searchStatus === 'unsupported'
+                    ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+                    : 'border-slate-800 bg-slate-900 text-slate-400';
+
+                const searchLabel =
+                  agent.searchStatus === 'active'
+                    ? 'Pencarian Web: Aktif'
+                    : agent.searchStatus === 'disabled'
+                    ? 'Pencarian Web: Nonaktif'
+                    : agent.searchStatus === 'unsupported'
+                    ? 'Pencarian Web: Tidak Didukung Provider'
+                    : 'Pencarian Web: Tidak Dipakai';
+
+                return (
+                  <div
+                    key={agent.agentId}
+                    className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 space-y-3"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <h4 className="text-sm font-semibold text-slate-100">{agent.agentName}</h4>
+                        <p className="text-[11px] text-slate-400 mt-0.5">{agent.persona}</p>
+                      </div>
+                      {agent.providerId && (
+                        <span className="rounded border border-slate-700 bg-slate-900 px-2 py-0.5 text-[11px] text-slate-300">
+                          {label(agent.providerId)}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <Globe className="h-3.5 w-3.5 text-sky-400 shrink-0" aria-hidden="true" />
+                        <span
+                          className={`inline-flex items-center rounded border px-2 py-0.5 text-[11px] font-medium ${searchBadgeStyle}`}
+                        >
+                          {searchLabel}
+                        </span>
+                      </div>
+                      <p className="text-[11px] leading-relaxed text-slate-400">
+                        {agent.searchStatusDetail}
+                      </p>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                        Blok Pengetahuan Lokal ({agent.injectedBlocks.length})
+                      </p>
+                      {agent.injectedBlocks.length === 0 ? (
+                        <p className="text-xs text-slate-500">
+                          Tidak menyuntikkan blok pengetahuan khusus.
+                        </p>
+                      ) : (
+                        <ul className="space-y-1">
+                          {agent.injectedBlocks.map((blk) => (
+                            <li
+                              key={`${agent.agentId}-${blk.id}`}
+                              className="flex flex-wrap items-center justify-between gap-1.5 rounded-lg border border-slate-800/80 bg-slate-900/50 px-2.5 py-1.5 text-xs"
+                            >
+                              <span className="text-slate-200 min-w-0 flex-1">{blk.title}</span>
+                              <StatusBadge value={blk.certainty} kind="certainty" />
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                        Masukan Pengguna &amp; Konteks
+                      </p>
+                      <ul className="space-y-0.5 text-xs text-slate-300">
+                        {agent.userInputs.map((inp) => (
+                          <li key={inp} className="flex items-start gap-1.5">
+                            <Info className="h-3.5 w-3.5 text-slate-500 mt-0.5 shrink-0" aria-hidden="true" />
+                            <span>{inp}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </Card>
 
       <Card
         title={`Basis Pengetahuan Agent (${state.knowledge.length} Blok)`}

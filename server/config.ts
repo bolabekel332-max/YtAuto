@@ -8,6 +8,7 @@ export interface ServerEnv {
   openrouterApiKey: string;
   nousApiKey: string;
   nousOauthClientId: string;
+  apinexApiKey: string;
   customApiKey: string;
   rateLimitPerMin: number;
   dailyCallCap: number;
@@ -78,6 +79,7 @@ export function getEnv(): ServerEnv {
     openrouterApiKey: (process.env.OPENROUTER_API_KEY ?? '').trim(),
     nousApiKey: (process.env.NOUS_API_KEY ?? '').trim(),
     nousOauthClientId: (process.env.NOUS_OAUTH_CLIENT_ID ?? '').trim() || 'hermes-cli',
+    apinexApiKey: (process.env.APINEX_API_KEY ?? '').trim(),
     customApiKey: (process.env.CUSTOM_API_KEY ?? '').trim(),
     rateLimitPerMin: parsePositiveInt(process.env.RATE_LIMIT_PER_MIN, 20),
     dailyCallCap: parsePositiveInt(process.env.DAILY_CALL_CAP, 300),

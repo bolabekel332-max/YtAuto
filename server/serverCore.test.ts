@@ -45,6 +45,7 @@ import {
   startNousDeviceFlow,
   disconnectNousOAuth,
 } from './providers/nousAuth';
+import { callApinexChat, fetchApinexModels } from './providers/apinex';
 import { fetchOpenRouterModels } from './providers/openrouter';
 import { withRetryAndFallback } from './providers/retry';
 import { runTwoStep } from './providers/searchTwoStep';
@@ -1337,6 +1338,195 @@ test('createApp() produksi menerapkan security headers, CSP, 413 payload_too_lar
     resetAuthStateForTests();
   }
 });
+
+test('callNousChat mengekstrak pesan top-level HTTP 404 dengan detail saran model secara bersih', async () => {
+  resetNousAuthForTests();
+  setNousSessionForTests({
+    accessToken: 'nous-test-token',
+    expiresAtMs: Date.now() + 600_000,
+  });
+  try {
+    const fakeFetch: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({
+          status: 404,
+          message: "This model's free period has ended. Switch to 'qwen/qwen4-max'.",
+        }),
+        { status: 404, headers: { 'Content-Type': 'application/json' } }
+      );
+
+    await assert.rejects(
+      () =>
+        callNousChat(
+          {
+            system: 'sys',
+            messages: [{ role: 'user', content: 'hi' }],
+            schemaId: 'orchestrator',
+            jsonMode: 'prompt_only',
+            temperature: null,
+            maxTokens: 256,
+            useSearch: false,
+            timeoutMs: 5000,
+          },
+          'qwen/qwen4-max:free',
+          fakeFetch
+        ),
+      (err: unknown) => {
+        assert.ok(err instanceof ProviderCallError);
+        assert.match(err.message, /404/);
+        assert.match(err.message, /free period has ended/i);
+        return true;
+      }
+    );
+  } finally {
+    resetNousAuthForTests();
+  }
+});
+
+test('fetchApinexModels memetakan katalog live APInex (contextWindow, vision, harga, dan filter health)', async () => {
+  const fakeFetch: typeof fetch = async (input) => {
+    const url = typeof input === 'string' ? input : input.toString();
+    if (url.includes('/api/public/models')) {
+      return new Response(
+        JSON.stringify({
+          models: [
+            {
+              id: 'gpt-6.1-sol',
+              provider: 'GPT',
+              name: 'GPT 6.1 Sol',
+              contextWindow: '1M',
+              allowFree: false,
+              supportsVision: true,
+              supportsTools: true,
+              dollarsPer1M: 0.3,
+              outputDollarsPer1M: 0.3,
+              health: 'live',
+            },
+            {
+              id: 'free/gemini-4-hydrogen',
+              provider: 'Free',
+              name: 'Gemini 4 Hydrogen',
+              contextWindow: '200K',
+              allowFree: true,
+              supportsVision: true,
+              supportsTools: true,
+              dollarsPer1M: 0,
+              outputDollarsPer1M: 0,
+              health: 'live',
+            },
+            {
+              id: 'offline/broken-model',
+              provider: 'Other',
+              name: 'Broken',
+              contextWindow: '64K',
+              allowFree: true,
+              supportsVision: false,
+              dollarsPer1M: 0,
+              outputDollarsPer1M: 0,
+              health: 'down',
+            },
+          ],
+        }),
+        { status: 200 }
+      );
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200 });
+  };
+
+  const res = await fetchApinexModels(fakeFetch);
+  assert.equal(res.providerId, 'apinex');
+  assert.equal(res.models.length, 2);
+  assert.equal(res.models[0].id, 'free/gemini-4-hydrogen');
+  assert.equal(res.models[0].isFree, true);
+  assert.equal(res.models[0].contextLength, 200_000);
+  assert.deepEqual(res.models[0].inputModalities, ['text', 'image']);
+  assert.equal(res.models[1].id, 'gpt-6.1-sol');
+  assert.equal(res.models[1].isFree, false);
+  assert.equal(res.models[1].contextLength, 1_000_000);
+  assert.equal(res.models[1].promptPricePerMillion, 0.3);
+});
+
+test('callApinexChat menjalankan Web Search terverifikasi dan menangani HTTP 402 dengan jelas', async () => {
+  const prevKey = process.env.APINEX_API_KEY;
+  process.env.APINEX_API_KEY = 'sk-apx-test-key-123';
+  try {
+    const searchAndChatFetch: typeof fetch = async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/v1/tools/web/search')) {
+        return new Response(
+          JSON.stringify({
+            results: {
+              web: [
+                {
+                  title: 'YouTube Creator Update',
+                  url: 'https://blog.youtube/news/creator-update',
+                  snippet: 'Detail pembaruan fitur Shorts terbaru.',
+                },
+              ],
+            },
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          choices: [{ finish_reason: 'stop', message: { content: 'Ringkasan riset Shorts.' } }],
+          usage: { total_tokens: 145 },
+        }),
+        { status: 200 }
+      );
+    };
+
+    const okRes = await callApinexChat(
+      {
+        system: 'sys',
+        messages: [{ role: 'user', content: 'Topik: pembaruan YouTube Shorts' }],
+        schemaId: 'researcher',
+        jsonMode: 'prompt_only',
+        temperature: 0.4,
+        maxTokens: 1024,
+        useSearch: true,
+        timeoutMs: 5000,
+      },
+      'free/gemini-4-hydrogen',
+      searchAndChatFetch
+    );
+    assert.equal(okRes.text, 'Ringkasan riset Shorts.');
+    assert.equal(okRes.sources?.length, 1);
+    assert.equal(okRes.sources?.[0].url, 'https://blog.youtube/news/creator-update');
+
+    const balance402Fetch: typeof fetch = async () =>
+      new Response(JSON.stringify({ error: { message: 'Insufficient balance' } }), { status: 402 });
+
+    await assert.rejects(
+      () =>
+        callApinexChat(
+          {
+            system: 'sys',
+            messages: [{ role: 'user', content: 'hi' }],
+            schemaId: 'orchestrator',
+            jsonMode: 'prompt_only',
+            temperature: null,
+            maxTokens: 256,
+            useSearch: false,
+            timeoutMs: 5000,
+          },
+          'gpt-6.1-sol',
+          balance402Fetch
+        ),
+      (err: unknown) => {
+        assert.ok(err instanceof ProviderCallError);
+        assert.match(err.message, /402/);
+        assert.match(err.message, /Saldo USD APInex/i);
+        return true;
+      }
+    );
+  } finally {
+    if (prevKey === undefined) delete process.env.APINEX_API_KEY;
+    else process.env.APINEX_API_KEY = prevKey;
+  }
+});
+
 
 
 

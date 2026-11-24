@@ -30,6 +30,7 @@ interface NousChatResponseBody {
   usage?: {
     total_tokens?: number;
   };
+  message?: string;
   error?: {
     message?: string;
     code?: number | string;
@@ -83,7 +84,9 @@ function mapNousHttpError(
     userMsg = 'Izin akses ke model Nous Portal ditolak (403). Periksa paket atau hak akses akun Nous Anda.';
   } else if (status === 404) {
     errorKind = 'not_found';
-    userMsg = 'Model atau endpoint Nous Portal tidak ditemukan (404). Periksa ID model di Pengaturan Model.';
+    userMsg = sanitized
+      ? `Model atau endpoint Nous Portal tidak ditemukan (404): ${sanitized} Pilih model aktif dari Katalog Model Live.`
+      : 'Model atau endpoint Nous Portal tidak ditemukan (404). Periksa atau pilih ID model aktif di Katalog Model Live.';
   } else if (status === 429) {
     errorKind = 'rate_limit';
     httpStatus = 429;
@@ -237,7 +240,11 @@ export async function callNousChat(
     }
 
     if (!attemptRes.ok || data.error) {
-      const errMsg = data.error?.message || sanitizeErrorMessage(rawText) || `HTTP ${attemptRes.status}`;
+      const errMsg =
+        data.error?.message ||
+        data.message ||
+        sanitizeErrorMessage(rawText) ||
+        `HTTP ${attemptRes.status}`;
       throw mapNousHttpError(
         attemptRes.status || 502,
         errMsg,

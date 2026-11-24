@@ -503,7 +503,7 @@ export async function getNousAccessToken(
 
 export async function fetchNousModels(
   fetchFn: typeof fetch = fetch
-): Promise<{ providerId: 'nous'; fetchedAt: string; models: Array<{ id: string; name?: string; isFree: boolean; ownedBy?: string }> }> {
+): Promise<NousModelsResponse> {
   const { token, authMethod } = await getNousAccessToken(fetchFn);
   const runFetch = (bearer: string) =>
     fetchJsonWithTimeout(
@@ -546,22 +546,33 @@ export async function fetchNousModels(
     return false;
   };
 
+  const parsePricePerMillion = (val: unknown): number | undefined => {
+    const n = typeof val === 'number' ? val : typeof val === 'string' && val.trim() ? Number(val.trim()) : NaN;
+    if (!Number.isFinite(n) || n < 0) return undefined;
+    return Math.round(n * 1_000_000 * 10000) / 10000;
+  };
+
   const rawList = Array.isArray(res.data.data) ? res.data.data : [];
-  const models: Array<{ id: string; name?: string; isFree: boolean; ownedBy?: string }> = [];
+  const models: NousModelsResponse['models'] = [];
   for (const item of rawList) {
     if (item && typeof item === 'object') {
       const rec = item as {
         id?: unknown;
         name?: unknown;
         owned_by?: unknown;
+        context_length?: unknown;
+        supported_parameters?: unknown;
         pricing?: { prompt?: unknown; completion?: unknown };
-        architecture?: { output_modalities?: unknown };
+        architecture?: { input_modalities?: unknown; output_modalities?: unknown };
       };
       if (typeof rec.id === 'string' && rec.id.trim().length > 0) {
         const id = rec.id.trim();
         const isSuffixFree = id.toLowerCase().endsWith(':free');
         const outputMods = Array.isArray(rec.architecture?.output_modalities)
-          ? rec.architecture.output_modalities
+          ? rec.architecture.output_modalities.filter((m): m is string => typeof m === 'string')
+          : undefined;
+        const inputMods = Array.isArray(rec.architecture?.input_modalities)
+          ? rec.architecture.input_modalities.filter((m): m is string => typeof m === 'string')
           : undefined;
         const isTextChatOutput =
           !outputMods || (outputMods.includes('text') && !outputMods.includes('audio'));
@@ -571,11 +582,31 @@ export async function fetchNousModels(
           isExplicitZero(rec.pricing?.prompt) &&
           isExplicitZero(rec.pricing?.completion);
         const isFree = isSuffixFree || isZeroPriceText;
+        const contextLength =
+          typeof rec.context_length === 'number' && Number.isFinite(rec.context_length) && rec.context_length > 0
+            ? rec.context_length
+            : undefined;
+        const supportedParams = Array.isArray(rec.supported_parameters)
+          ? rec.supported_parameters.filter((p): p is string => typeof p === 'string')
+          : undefined;
+        const supportsStructuredOutput = supportedParams
+          ? supportedParams.includes('structured_outputs') || supportedParams.includes('response_format')
+          : undefined;
+
         models.push({
           id,
           name: typeof rec.name === 'string' ? rec.name.trim() : undefined,
           isFree,
           ownedBy: typeof rec.owned_by === 'string' ? rec.owned_by : undefined,
+          ...(contextLength !== undefined ? { contextLength } : {}),
+          ...(inputMods && inputMods.length > 0 ? { inputModalities: inputMods } : {}),
+          ...(supportsStructuredOutput !== undefined ? { supportsStructuredOutput } : {}),
+          ...(parsePricePerMillion(rec.pricing?.prompt) !== undefined
+            ? { promptPricePerMillion: parsePricePerMillion(rec.pricing?.prompt) }
+            : {}),
+          ...(parsePricePerMillion(rec.pricing?.completion) !== undefined
+            ? { completionPricePerMillion: parsePricePerMillion(rec.pricing?.completion) }
+            : {}),
         });
       }
     }
