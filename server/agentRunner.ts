@@ -9,8 +9,50 @@ import { buildSystemPrompt, wrapAsData } from './promptBuilder';
 import { getProvider } from './providers/registry';
 import { withRetryAndFallback } from './providers/retry';
 import { runTwoStep } from './providers/searchTwoStep';
-import { ProviderCallError, type LLMMediaItem, type LLMProvider, type LLMRequest } from './providers/types';
+import {
+  ProviderCallError,
+  sanitizeSources,
+  type LLMMediaItem,
+  type LLMProvider,
+  type LLMRequest,
+} from './providers/types';
 import { AppApiError, validateConfig, validateInput, validateOutput } from './validation';
+
+function cleanQuerySegment(value: unknown, maxLen: number): string {
+  if (typeof value !== 'string') return '';
+  return value
+    .replace(/[\u0000-\u001F\u007F]/g, ' ')
+    .replace(/\[\s*data_(?:untrusted|escaped)_[^\]]*\]/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLen);
+}
+
+function buildAgentSearchQuery(
+  agentId: AgentRunRequest['agentId'],
+  validatedInput: unknown,
+  profile: AgentRunRequest['profile']
+): string {
+  const inputRec =
+    validatedInput && typeof validatedInput === 'object'
+      ? (validatedInput as Record<string, unknown>)
+      : {};
+  const topic = cleanQuerySegment(inputRec.topic, 160);
+  const rawNiche =
+    profile.niche === 'Lainnya' && profile.customNiche ? profile.customNiche : profile.niche;
+  const niche = cleanQuerySegment(rawNiche, 80);
+
+  const parts: string[] = [];
+  if (topic) parts.push(topic);
+  if (niche) parts.push(niche);
+  if (agentId === 'compliance') {
+    parts.push('kebijakan monetisasi YouTube TikTok');
+  } else if (parts.length === 0) {
+    parts.push('tren konten YouTube TikTok');
+  }
+
+  return parts.join(' ').trim().slice(0, 300);
+}
 
 function resolveEffectiveJsonMode(desired: JsonMode, provider: LLMProvider): JsonMode {
   if (desired === 'json_schema' && !provider.capabilities.jsonSchema) {
@@ -88,6 +130,8 @@ export async function runAgent(
   const effectiveJsonMode = resolveEffectiveJsonMode(validatedConfig.jsonMode, provider);
   const jsonSchema = toJsonSchema(schemaId);
 
+  const searchQuery = buildAgentSearchQuery(req.agentId, validatedInput, req.profile);
+
   const baseRequest: LLMRequest = {
     system: systemPrompt,
     messages: [{ role: 'user', content: userParts.join('\n\n') }],
@@ -97,6 +141,8 @@ export async function runAgent(
     temperature: validatedConfig.temperature,
     maxTokens: validatedConfig.maxTokens,
     useSearch: shouldUseSearch,
+    searchQuery,
+    promptNonce,
     timeoutMs: validatedConfig.timeoutMs,
     media,
     signal: options.signal,
@@ -190,7 +236,8 @@ export async function runAgent(
     }
 
     const fallbackUsed = modelUsed !== validatedConfig.model;
-    const groundedSources = sources && sources.length > 0 ? sources : undefined;
+    const sanitizedSources = sanitizeSources(sources);
+    const groundedSources = sanitizedSources.length > 0 ? sanitizedSources : undefined;
     const latencyMs = Date.now() - start;
     logCall({
       agentId: req.agentId,

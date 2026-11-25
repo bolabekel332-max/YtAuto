@@ -1,4 +1,5 @@
-import { MAX_FALLBACKS } from '../../shared/constants';
+import { AUTO_FREE_FALLBACK_MODELS, MAX_FALLBACKS } from '../../shared/constants';
+import { getEnv } from '../config';
 import { ProviderCallError, type LLMProvider, type LLMRequest, type LLMResponse } from './types';
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -34,18 +35,16 @@ export interface RetryAttemptResult {
 }
 
 function getFreeFallbackModel(providerId: string): string | undefined {
-  if (providerId === 'apinex') return 'free/gemini-4-hydrogen';
-  if (providerId === 'openrouter') return 'nvidia/nemotron-3-ultra-550b-a55b:free';
-  if (providerId === 'nous') return 'qwen/qwen4-max:free';
-  return undefined;
+  return (AUTO_FREE_FALLBACK_MODELS as Record<string, string>)[providerId];
 }
 
 /**
  * Aturan retry dan fallback (BP 9.4 / NFR-02):
  * 1. Error 429 atau 5xx (retryable): retry dengan jeda + jitter maks 2x per model.
  * 2. Jika masih gagal, pindah ke model cadangan (fallbackModels) pada provider yang sama (maks 3).
- * 3. Auth/permission error, output_truncated, capability_missing, atau abort: TIDAK di-retry maupun pindah fallback.
- * 4. Setiap panggilan model aktual memanggil beforeModelCall() (consumeModelCall).
+ * 3. Error 402 (insufficient_balance): jika AUTO_FREE_FALLBACK aktif, coba model gratis bawaan provider sekali lalu hentikan jika tetap 402.
+ * 4. Auth/permission error, invalid_request, not_found, output_truncated, capability_missing, atau abort: TIDAK di-retry maupun pindah fallback.
+ * 5. Setiap panggilan model aktual memanggil beforeModelCall() (consumeModelCall).
  */
 export async function withRetryAndFallback(
   provider: LLMProvider,
@@ -105,14 +104,25 @@ export async function withRetryAndFallback(
         }
         if (err instanceof ProviderCallError) {
           if (err.meta?.errorKind === 'insufficient_balance') {
-            const freeFallback = getFreeFallbackModel(provider.id);
-            if (freeFallback && !modelsToTry.includes(freeFallback)) {
+            const { autoFreeFallback } = getEnv();
+            const freeFallback = autoFreeFallback
+              ? getFreeFallbackModel(provider.id)
+              : undefined;
+            if (freeFallback && freeFallback !== model && !modelsToTry.includes(freeFallback)) {
               modelsToTry.push(freeFallback);
               console.warn(
-                `[Auto-Fallback] Saldo tidak mencukupi (402) untuk model ${model} pada provider ${provider.id}. Berpindah otomatis ke model gratis ${freeFallback}.`
+                JSON.stringify({
+                  timestamp: new Date().toISOString(),
+                  level: 'warn',
+                  scope: 'auto_free_fallback',
+                  providerId: provider.id,
+                  requestedModel: model,
+                  fallbackModel: freeFallback,
+                  upstreamStatus: err.meta?.upstreamStatus ?? 402,
+                })
               );
-              break;
             }
+            break;
           }
           // Hentikan langsung pada error yang tidak dapat diselesaikan dengan fallback model
           if (

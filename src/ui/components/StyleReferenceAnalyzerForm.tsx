@@ -16,6 +16,7 @@ import {
   MAX_PASTE_CHARS,
   MAX_REFERENCES,
   MAX_VIDEO_MB,
+  PROVIDER_CAPABILITIES,
 } from '../../../shared/constants';
 import { isValidYoutubeUrl } from '../../../shared/agentInputs';
 import type {
@@ -74,6 +75,10 @@ export const StyleReferenceAnalyzerForm: React.FC<StyleReferenceAnalyzerFormProp
   const styleConfig =
     state.modelConfigs.find((c) => c.agentId === 'style_analyst') ??
     state.modelConfigs[0];
+  const styleCapabilities = PROVIDER_CAPABILITIES[styleConfig.providerId];
+  const missingImageCapability =
+    (refType === 'upload_video' || refType === 'upload_images') &&
+    !styleCapabilities.image;
 
   const activeRefCount = state.styleReferences.filter((r) => r.status !== 'failed').length;
   const canAddMoreRefs = activeRefCount < MAX_REFERENCES;
@@ -510,6 +515,15 @@ export const StyleReferenceAnalyzerForm: React.FC<StyleReferenceAnalyzerFormProp
         />
       </div>
 
+      {missingImageCapability && (
+        <div
+          role="alert"
+          className="rounded-xl border border-amber-500/40 bg-amber-950/45 px-4 py-3 text-xs text-amber-100 leading-relaxed"
+        >
+          Provider aktif untuk Analis Gaya Visual ({label(styleConfig.providerId)}) tidak mendukung input Gambar/Frame. Pilih tab Deskripsi Manual atau alihkan Analis Gaya Visual ke Gemini, OpenRouter, Nous Portal, atau APInex di Pengaturan Model sebelum menganalisis video/gambar.
+        </div>
+      )}
+
       {errorMsg && (
         <div
           role="alert"
@@ -547,9 +561,9 @@ export const StyleReferenceAnalyzerForm: React.FC<StyleReferenceAnalyzerFormProp
           )}
           <button
             type="button"
-            disabled={analyzing || !canAddMoreRefs}
+            disabled={analyzing || !canAddMoreRefs || missingImageCapability}
             onClick={(e) => void handleAnalyzeSubmit(e)}
-            className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 transition-colors"
+            className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 transition-colors"
           >
             {analyzing ? (
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />

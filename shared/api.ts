@@ -13,7 +13,6 @@ import {
 import { styleAnalystIn } from './agentInputs';
 
 export const API_ERROR_CODES = [
-  'unauthorized',
   'invalid_request',
   'capability_missing',
   'payload_too_large',
@@ -28,7 +27,6 @@ export const API_ERROR_CODES = [
 export type ApiErrorCode = (typeof API_ERROR_CODES)[number];
 
 export const ERROR_HTTP_STATUS: Record<ApiErrorCode, number> = {
-  unauthorized: 401,
   invalid_request: 400,
   capability_missing: 400,
   payload_too_large: 413,
@@ -109,6 +107,7 @@ export interface ProvidersStatusResponse {
   providers: ProviderStatus[];
   dailyCallsUsed: number;
   dailyCallCap: number;
+  nousOAuthEnabled?: boolean;
 }
 
 export interface ProviderTestResponse {

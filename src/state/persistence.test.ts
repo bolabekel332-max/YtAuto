@@ -256,3 +256,155 @@ test('F-25: importAll menolak file yang melampaui MAX_IMPORT_BYTES', () => {
     assert.ok(res.error.includes('melebihi batas maksimum'));
   }
 });
+
+test('R3-08: cadangan korup dibatasi <= 2 MB dan save() menghapus CORRUPT_BACKUP_KEY sebelum membuang history saat kuota penuh', () => {
+  withMockWindowStorage((storage) => {
+    // 1. Payload korup > 2 MB tidak boleh disimpan utuh ke CORRUPT_BACKUP_KEY
+    const hugeCorrupt = `{"profile": "${'x'.repeat(2_200_000)}`;
+    storage.setItem(STORAGE_KEY, hugeCorrupt);
+    const loaded = load();
+    assert.ok(loaded.warning);
+    const backup = storage.getItem(CORRUPT_BACKUP_KEY);
+    assert.ok(backup !== null);
+    assert.ok(
+      backup.length <= 2 * 1024 * 1024,
+      `Ukuran CORRUPT_BACKUP_KEY (${backup.length}) harus <= 2 MB`
+    );
+    const parsedSummary = JSON.parse(backup) as { truncated?: boolean; originalBytes?: number };
+    assert.equal(parsedSummary.truncated, true);
+    assert.ok((parsedSummary.originalBytes ?? 0) > 2_000_000);
+  });
+
+  // 2. Saat QuotaExceededError terjadi pada save(), CORRUPT_BACKUP_KEY dihapus sebelum history dipotong
+  const prevWindow = (globalThis as unknown as { window?: unknown }).window;
+  const backing = new Map<string, string>();
+  backing.set(CORRUPT_BACKUP_KEY, '{"old":"corrupt"}');
+
+  const quotaStorage = {
+    getItem: (k: string) => backing.get(k) ?? null,
+    setItem: (k: string, v: string) => {
+      if (k === STORAGE_KEY && backing.has(CORRUPT_BACKUP_KEY)) {
+        const quotaErr = new Error('Quota exceeded');
+        quotaErr.name = 'QuotaExceededError';
+        throw quotaErr;
+      }
+      backing.set(k, v);
+    },
+    removeItem: (k: string) => {
+      backing.delete(k);
+    },
+    clear: () => backing.clear(),
+  };
+  (globalThis as unknown as { window: { localStorage: typeof quotaStorage } }).window = {
+    localStorage: quotaStorage,
+  };
+
+  try {
+    const entry = {
+      id: 'run_keep_1',
+      createdAt: '2026-11-24T01:00:00.000Z',
+      input: { topic: 'Topik aman', targetPlatform: 'youtube_shorts' as const, includeResearch: false },
+      run: {
+        id: 'run_keep_1',
+        input: { topic: 'Topik aman', targetPlatform: 'youtube_shorts' as const, includeResearch: false },
+        steps: {
+          researcher: { status: 'skipped' as const },
+          scriptwriter: { status: 'idle' as const },
+          visual: { status: 'idle' as const },
+          packaging: { status: 'idle' as const },
+          compliance: { status: 'idle' as const },
+          orchestrator: { status: 'idle' as const },
+        },
+        round: 0 as const,
+        complianceRounds: [],
+        status: 'paused' as const,
+      },
+      selection: { titleIndex: 0, hookIndex: 0 },
+      profileSnapshot: SAMPLE_PROFILE_FOR_TEST,
+    };
+
+    const res = save({
+      profile: SAMPLE_PROFILE_FOR_TEST,
+      profileConfigured: true,
+      styleProfiles: [],
+      styleReferences: [],
+      modelConfigs: DEFAULT_MODEL_CONFIGS,
+      knowledge: DEFAULT_KNOWLEDGE,
+      history: [entry],
+      activeRun: null,
+      changesSinceExport: 1,
+    });
+    assert.equal(res.ok, true);
+    assert.equal(backing.get(CORRUPT_BACKUP_KEY), undefined, 'CORRUPT_BACKUP_KEY harus dihapus lebih dulu');
+    const saved = JSON.parse(backing.get(STORAGE_KEY) ?? '{}') as { history?: unknown[] };
+    assert.equal(saved.history?.length, 1, 'History tidak boleh dibuang bila penghapusan cadangan korup cukup');
+  } finally {
+    if (prevWindow === undefined) delete (globalThis as unknown as { window?: unknown }).window;
+    else (globalThis as unknown as { window: unknown }).window = prevWindow;
+  }
+});
+
+test('R3-18c: compliance notes 5000 char + 35 issues dinormalkan saat save/exportAll dan lolos round-trip load()', () => {
+  withMockWindowStorage((storage) => {
+    const oversizedComplianceRun = {
+      id: 'run_r3_18c',
+      input: { topic: 'Topik panjang', targetPlatform: 'youtube_shorts' as const, includeResearch: false },
+      steps: {
+        researcher: { status: 'skipped' as const },
+        scriptwriter: { status: 'idle' as const },
+        visual: { status: 'idle' as const },
+        packaging: { status: 'idle' as const },
+        compliance: { status: 'idle' as const },
+        orchestrator: { status: 'idle' as const },
+      },
+      round: 1 as const,
+      complianceRounds: [
+        {
+          verdict: 'revise' as const,
+          issues: Array.from({ length: 35 }, (_, i) => ({
+            severity: 'low' as const,
+            relatedAgent: 'scriptwriter' as const,
+            problem: `Masalah ${i}`,
+            fix: `Perbaikan ${i}`,
+          })),
+          similarityRisks: [],
+          notes: 'N'.repeat(5000),
+        },
+      ],
+      status: 'paused' as const,
+    };
+
+    const data = {
+      profile: SAMPLE_PROFILE_FOR_TEST,
+      profileConfigured: true,
+      styleProfiles: [],
+      styleReferences: [],
+      modelConfigs: DEFAULT_MODEL_CONFIGS,
+      knowledge: DEFAULT_KNOWLEDGE,
+      history: [
+        {
+          id: 'run_r3_18c',
+          createdAt: '2026-11-24T01:00:00.000Z',
+          input: oversizedComplianceRun.input,
+          run: oversizedComplianceRun,
+          selection: { titleIndex: 0, hookIndex: 0 },
+          profileSnapshot: SAMPLE_PROFILE_FOR_TEST,
+        },
+      ],
+      activeRun: oversizedComplianceRun,
+      changesSinceExport: 1,
+    };
+
+    const saveRes = save(data);
+    assert.equal(saveRes.ok, true);
+    const exported = exportAll(data);
+    assert.equal(exported.history[0].run.complianceRounds[0].notes.length, 4000);
+    assert.equal(exported.history[0].run.complianceRounds[0].issues.length, 30);
+
+    const loaded = load();
+    assert.equal(loaded.warning, undefined);
+    assert.equal(loaded.data?.history?.length, 1);
+    assert.ok(storage.getItem(STORAGE_KEY));
+  });
+});
+

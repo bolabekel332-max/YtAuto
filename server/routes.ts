@@ -21,6 +21,7 @@ import {
   strictRateLimiter,
 } from './auth';
 import { extractSafeErrorLogMeta, logCall } from './logger';
+import { getEnv, isLoopbackHost } from './config';
 import {
   disconnectNousOAuth,
   fetchNousModels,
@@ -126,10 +127,12 @@ export function registerRoutes(app: Express): void {
 
   api.get('/providers/status', (_req: Request, res: Response) => {
     const usage = getDailyCallUsage();
+    const env = getEnv();
     const payload: ProvidersStatusResponse = {
       providers: listStatus(),
       dailyCallsUsed: usage.used,
       dailyCallCap: usage.cap,
+      nousOAuthEnabled: isLoopbackHost(env.host) || env.enableNousOAuth,
     };
     res.json(payload);
   });
@@ -259,6 +262,22 @@ export function registerRoutes(app: Express): void {
       });
       handleRouteError(res, err);
     }
+  });
+
+  api.use('/oauth/nous', (_req: Request, res: Response, next) => {
+    const env = getEnv();
+    if (!isLoopbackHost(env.host) && !env.enableNousOAuth) {
+      const payload: ApiErrorBody = {
+        error: {
+          code: 'invalid_request',
+          message:
+            'Endpoint OAuth Nous dinonaktifkan saat HOST non-loopback (atur ENABLE_NOUS_OAUTH=true bila dilindungi gateway akses).',
+        },
+      };
+      res.status(404).json(payload);
+      return;
+    }
+    next();
   });
 
   api.get('/oauth/nous/status', (_req: Request, res: Response) => {

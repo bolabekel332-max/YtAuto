@@ -5,6 +5,7 @@ import {
   parseRetryAfterMs,
   ProviderCallError,
   sanitizeErrorMessage,
+  sanitizeSources,
   type LLMProvider,
   type LLMRequest,
   type LLMResponse,
@@ -206,27 +207,46 @@ export const openrouterProvider: LLMProvider = {
         );
       }
 
-      const data = (await res.json()) as OpenRouterResponseBody;
+      const rawText = await res.text();
+      let data: OpenRouterResponseBody | null = null;
+      if (rawText.trim().length > 0) {
+        try {
+          data = JSON.parse(rawText) as OpenRouterResponseBody;
+        } catch {
+          data = null;
+        }
+      }
 
-      if (!res.ok || data.error) {
-        const sanitized = sanitizeErrorMessage(data.error?.message || 'Permintaan ditolak.');
+      if (!res.ok || data?.error) {
+        const snippet = sanitizeErrorMessage(data?.error?.message || rawText || 'Permintaan ditolak.', 200);
         throw new ProviderCallError(
           'provider_error',
           502,
-          `OpenRouter error (${res.status}): ${sanitized}`,
+          `OpenRouter error (${res.status}): ${snippet}`,
+          res.status >= 500,
+          { upstreamStatus: res.status, sanitizedMessage: snippet }
+        );
+      }
+
+      if (!data) {
+        const snippet = sanitizeErrorMessage(rawText, 200);
+        throw new ProviderCallError(
+          'provider_error',
+          502,
+          `Respons OpenRouter bukan JSON yang valid (HTTP ${res.status}): ${snippet || 'kosong'}`,
           false,
-          { upstreamStatus: res.status, sanitizedMessage: sanitized }
+          { upstreamStatus: res.status, sanitizedMessage: snippet }
         );
       }
 
       const choice = data.choices?.[0];
       const text = extractTextFromChoice(choice?.message?.content);
       const truncated = choice?.finish_reason === 'length';
-      const sources: Array<{ title: string; url: string }> = [];
+      const rawSources: Array<{ title: string; url: string }> = [];
 
       for (const ann of choice?.message?.annotations ?? []) {
         if (ann.type === 'url_citation' && ann.url_citation?.url) {
-          sources.push({
+          rawSources.push({
             title: ann.url_citation.title || ann.url_citation.url,
             url: ann.url_citation.url,
           });
@@ -235,7 +255,7 @@ export const openrouterProvider: LLMProvider = {
 
       return {
         text,
-        sources,
+        sources: sanitizeSources(rawSources),
         tokens: data.usage?.total_tokens,
         truncated,
       };
@@ -327,7 +347,8 @@ export async function fetchOpenRouterModels(
       );
     }
 
-    const body = (await res.json()) as {
+    const catalogRaw = await res.text();
+    let body: {
       data?: Array<{
         id?: unknown;
         name?: unknown;
@@ -337,6 +358,16 @@ export async function fetchOpenRouterModels(
         architecture?: { input_modalities?: unknown; output_modalities?: unknown };
       }>;
     };
+    try {
+      body = JSON.parse(catalogRaw);
+    } catch {
+      throw new ProviderCallError(
+        'provider_error',
+        502,
+        `Katalog model OpenRouter mengembalikan JSON tidak valid (HTTP ${res.status}).`,
+        false
+      );
+    }
 
     const isExplicitZero = (val: unknown): boolean => {
       if (typeof val === 'number') return Number.isFinite(val) && val === 0;

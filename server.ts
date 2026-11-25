@@ -4,9 +4,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ApiErrorBody } from './shared/api';
-import { getEnv } from './server/config';
+import { getEnv, isLoopbackHost } from './server/config';
 import { sanitizeErrorMessage } from './server/providers/types';
 import { registerRoutes } from './server/routes';
+
+export class MissingDistError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MissingDistError';
+  }
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,7 +33,33 @@ export async function createApp(options: { distDir?: string } = {}) {
   const env = getEnv();
   const app = express();
 
+  app.disable('x-powered-by');
   app.set('trust proxy', env.trustProxy);
+
+  if (!isLoopbackHost(env.host)) {
+    console.warn(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: 'warn',
+        scope: 'network_exposure',
+        host: env.host,
+        message:
+          'Server terekspos ke jaringan tanpa gerbang akses. Pasang autentikasi gateway/IAP/VPN di depan server bila tidak berjalan di jaringan privat.',
+      })
+    );
+  }
+
+  if (env.trustProxy === true) {
+    console.warn(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: 'warn',
+        scope: 'trust_proxy',
+        message:
+          'TRUST_PROXY=true mempercayai seluruh header X-Forwarded-For dan dapat melemahkan rate limiter. Gunakan jumlah hop numerik (mis. TRUST_PROXY=1).',
+      })
+    );
+  }
 
   // Header keamanan manual untuk semua respons
   app.use((_req: Request, res: Response, next: NextFunction) => {
@@ -81,10 +114,9 @@ export async function createApp(options: { distDir?: string } = {}) {
     const distDir = options.distDir ?? path.resolve(__dirname, 'dist');
     const indexHtmlPath = path.join(distDir, 'index.html');
     if (!fs.existsSync(indexHtmlPath)) {
-      console.error(
+      throw new MissingDistError(
         `Kesalahan mode produksi: berkas "${indexHtmlPath}" tidak ditemukan. Jalankan "npm run build" terlebih dahulu.`
       );
-      process.exit(1);
     }
     app.use(express.static(distDir));
     app.get('*', (_req: Request, res: Response) => {

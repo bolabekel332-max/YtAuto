@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useId } from 'react';
 import { EyeOff, Palette, PencilLine } from 'lucide-react';
 import type { StyleAttributes } from '../../../shared/schemas';
 import type { StyleAttributeKey } from '../../style/mergeProfiles';
@@ -84,6 +84,9 @@ export const StyleProfileView: React.FC<StyleProfileViewProps> = ({
   sourceOptions,
   onSelectAttributeSource,
 }) => {
+  const baseId = useId();
+  const avgShotId = `${baseId}-avg-shot`;
+  const cutsPerMinId = `${baseId}-cuts-per-min`;
   const editable = Boolean(onChangeAttributes);
 
   const updateTextAttr = (
@@ -170,10 +173,11 @@ export const StyleProfileView: React.FC<StyleProfileViewProps> = ({
                       />
                       <div className="grid grid-cols-2 gap-2">
                         <div>
-                          <label className="block text-[11px] text-slate-400">
+                          <label htmlFor={avgShotId} className="block text-[11px] text-slate-400">
                             Rata-rata Shot (dtk)
                           </label>
                           <input
+                            id={avgShotId}
                             type="number"
                             step="0.1"
                             value={attributes.rhythm.value.avgShotSec ?? ''}
@@ -195,10 +199,11 @@ export const StyleProfileView: React.FC<StyleProfileViewProps> = ({
                           />
                         </div>
                         <div>
-                          <label className="block text-[11px] text-slate-400">
+                          <label htmlFor={cutsPerMinId} className="block text-[11px] text-slate-400">
                             Potongan / Menit
                           </label>
                           <input
+                            id={cutsPerMinId}
                             type="number"
                             step="0.5"
                             value={attributes.rhythm.value.cutsPerMin ?? ''}

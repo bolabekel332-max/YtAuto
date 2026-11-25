@@ -13,7 +13,12 @@ import {
   type AgentModelConfig,
 } from '../shared/schemas';
 import type { ApiErrorCode } from '../shared/api';
-import { CUSTOM_PROVIDER_BASE_URL, getEnv, PROVIDER_ALLOWLIST } from './config';
+import {
+  CUSTOM_PROVIDER_BASE_URL,
+  getEffectiveGeminiModelAllowlist,
+  getEnv,
+  PROVIDER_ALLOWLIST,
+} from './config';
 import type { LLMMediaItem, LLMProvider } from './providers/types';
 
 export class AppApiError extends Error {
@@ -52,15 +57,15 @@ export function validateConfig(
   }
 
   if (config.providerId === 'gemini') {
-    const { geminiModelAllowlist } = getEnv();
-    if (geminiModelAllowlist.length > 0) {
+    const effectiveAllowlist = getEffectiveGeminiModelAllowlist(getEnv());
+    if (effectiveAllowlist.length > 0) {
       const modelsToCheck = [config.model, ...config.fallbackModels];
       for (const m of modelsToCheck) {
-        if (!geminiModelAllowlist.includes(m)) {
+        if (!effectiveAllowlist.includes(m)) {
           throw new AppApiError(
             'invalid_request',
             400,
-            `Model Gemini "${m}" tidak termasuk dalam GEMINI_MODEL_ALLOWLIST server.`
+            `Model Gemini "${m}" tidak termasuk dalam GEMINI_MODEL_ALLOWLIST server (${effectiveAllowlist.join(', ')}).`
           );
         }
       }
@@ -192,34 +197,122 @@ export function validateInput(agentId: AgentId, mode: string | undefined, rawInp
   return parsed.data;
 }
 
-export function extractJsonFromText(text: string): unknown {
+export function extractJsonFromText(
+  text: string,
+  accept?: (parsed: unknown) => boolean
+): unknown {
   const trimmed = text.trim();
+  let firstValid: unknown = undefined;
+  let hasFirstValid = false;
+
+  const tryAccept = (candidate: unknown): { matched: boolean; value?: unknown } => {
+    if (!accept || accept(candidate)) {
+      return { matched: true, value: candidate };
+    }
+    if (!hasFirstValid) {
+      firstValid = candidate;
+      hasFirstValid = true;
+    }
+    return { matched: false };
+  };
+
   try {
-    return JSON.parse(trimmed);
+    const direct = JSON.parse(trimmed);
+    const res = tryAccept(direct);
+    if (res.matched) return res.value;
   } catch {
-    // Coba ekstrak dari blok ```json ... ``` atau kurung kurawal pertama..terakhir
-    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    if (fenced?.[1]) {
-      return JSON.parse(fenced[1].trim());
-    }
-    const firstBrace = trimmed.indexOf('{');
-    const lastBrace = trimmed.lastIndexOf('}');
-    if (firstBrace !== -1 && lastBrace > firstBrace) {
-      return JSON.parse(trimmed.slice(firstBrace, lastBrace + 1));
-    }
-    throw new Error('Respons teks bukan JSON yang valid.');
+    // Lanjut ke ekstraksi toleran di bawah
   }
+
+  // Coba semua blok fence ```json ... ``` atau ``` ... ``` secara berurutan
+  const fenceRegex = /```(?:json)?\s*([\s\S]*?)```/gi;
+  let fenceMatch: RegExpExecArray | null;
+  while ((fenceMatch = fenceRegex.exec(trimmed)) !== null) {
+    const inner = fenceMatch[1]?.trim();
+    if (!inner) continue;
+    try {
+      const parsed = JSON.parse(inner);
+      const res = tryAccept(parsed);
+      if (res.matched) return res.value;
+    } catch {
+      // Lanjutkan ke blok fence berikutnya
+    }
+  }
+
+  // Pindai potongan kurung kurawal seimbang {...} sambil mengenali string & escape JSON
+  let cursor = 0;
+  while (cursor < trimmed.length) {
+    const openIdx = trimmed.indexOf('{', cursor);
+    if (openIdx === -1) break;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let closedAt = -1;
+
+    for (let i = openIdx; i < trimmed.length; i += 1) {
+      const ch = trimmed[i];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === '\\') {
+          escaped = true;
+        } else if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (ch === '"') {
+        inString = true;
+      } else if (ch === '{') {
+        depth += 1;
+      } else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          closedAt = i;
+          break;
+        }
+      }
+    }
+
+    if (closedAt !== -1) {
+      const slice = trimmed.slice(openIdx, closedAt + 1);
+      try {
+        const parsed = JSON.parse(slice);
+        const res = tryAccept(parsed);
+        if (res.matched) return res.value;
+        cursor = closedAt + 1;
+        continue;
+      } catch {
+        cursor = openIdx + 1;
+        continue;
+      }
+    }
+
+    cursor = openIdx + 1;
+  }
+
+  if (hasFirstValid) {
+    return firstValid;
+  }
+
+  throw new Error('Respons teks bukan JSON yang valid.');
 }
 
 export function validateOutput<T = unknown>(
   schemaId: SchemaId,
   rawJsonOrText: { json?: unknown; text?: string }
 ): { ok: true; data: T } | { ok: false; reason: string } {
+  const schema = OUTPUT_SCHEMAS[schemaId];
   let candidate: unknown = rawJsonOrText.json;
 
   if (candidate === undefined && typeof rawJsonOrText.text === 'string') {
     try {
-      candidate = extractJsonFromText(rawJsonOrText.text);
+      candidate = extractJsonFromText(
+        rawJsonOrText.text,
+        (parsed) => schema.safeParse(parsed).success
+      );
     } catch (err) {
       return {
         ok: false,
@@ -235,7 +328,6 @@ export function validateOutput<T = unknown>(
     };
   }
 
-  const schema = OUTPUT_SCHEMAS[schemaId];
   const result = schema.safeParse(candidate);
   if (!result.success) {
     const zErr = result.error as ZodError;

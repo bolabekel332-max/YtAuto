@@ -78,9 +78,7 @@ async function requestJson<T>(
     const errPayload = parsedBody as Partial<ApiErrorBody> | null;
     const code: ApiErrorCode =
       errPayload?.error?.code ??
-      (response.status === 401
-        ? 'unauthorized'
-        : response.status === 413
+      (response.status === 413
         ? 'payload_too_large'
         : response.status === 429
         ? 'rate_limited'

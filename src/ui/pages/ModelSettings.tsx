@@ -176,12 +176,14 @@ export const ModelSettings: React.FC = () => {
       setLoadingStatus(true);
       setStatusError(null);
       try {
-        const [res, oauthRes] = await Promise.all([
-          getProviderStatus(),
-          getNousOAuthStatus().catch(() => null),
-        ]);
+        const res = await getProviderStatus();
         setStatusData(res);
-        if (oauthRes) setNousOAuth(oauthRes);
+        if (res.nousOAuthEnabled !== false) {
+          const oauthRes = await getNousOAuthStatus().catch(() => null);
+          if (oauthRes) setNousOAuth(oauthRes);
+        } else {
+          setNousOAuth(null);
+        }
 
         if (withCatalogs) {
           for (const cid of CATALOG_PROVIDER_IDS) {
@@ -612,7 +614,7 @@ export const ModelSettings: React.FC = () => {
                   {p.id === 'nous' && !nousFlow && (
                     <button
                       type="button"
-                      disabled={nousStarting}
+                      disabled={nousStarting || statusData?.nousOAuthEnabled === false}
                       onClick={handleStartNousOAuth}
                       className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/15 px-3 py-1.5 text-xs font-medium text-sky-200 hover:bg-sky-500/25 disabled:opacity-50"
                     >
@@ -734,6 +736,12 @@ export const ModelSettings: React.FC = () => {
                 </div>
               )}
 
+              {p.id === 'nous' && statusData?.nousOAuthEnabled === false && (
+                <p className="text-[11px] text-slate-400">
+                  OAuth Nous dinonaktifkan sementara pada HOST non-loopback (atur ENABLE_NOUS_OAUTH=true bila server dilindungi gateway akses).
+                </p>
+              )}
+
               {p.id === 'nous' && nousPollMsg && (
                 <p className="text-[11px] text-amber-200">{nousPollMsg}</p>
               )}
@@ -801,6 +809,7 @@ export const ModelSettings: React.FC = () => {
                         </label>
                         <input
                           type="text"
+                          aria-label={`Cari ID model ${label(pid)}`}
                           value={searchByProvider[pid]}
                           onChange={(e) =>
                             setSearchByProvider((prev) => ({ ...prev, [pid]: e.target.value }))
@@ -1051,13 +1060,19 @@ export const ModelSettings: React.FC = () => {
                   {/* Provider */}
                   <div>
                     <div className="flex items-center gap-1.5 mb-1">
-                      <label className="text-xs font-medium text-slate-200">Provider</label>
+                      <label
+                        htmlFor={`ms-${cfg.agentId}-provider`}
+                        className="text-xs font-medium text-slate-200"
+                      >
+                        Provider
+                      </label>
                       <Tooltip
                         text="Pilih mesin AI untuk agent ini. Gunakan Mock untuk menguji tanpa kunci API."
                         label={`Panduan provider ${label(cfg.agentId)}`}
                       />
                     </div>
                     <select
+                      id={`ms-${cfg.agentId}-provider`}
                       value={cfg.providerId}
                       onChange={(e) => {
                         const nextProvider = e.target.value as ProviderId;
@@ -1086,13 +1101,19 @@ export const ModelSettings: React.FC = () => {
                   {/* Model ID */}
                   <div>
                     <div className="flex items-center gap-1.5 mb-1">
-                      <label className="text-xs font-medium text-slate-200">ID Model</label>
+                      <label
+                        htmlFor={`ms-${cfg.agentId}-model`}
+                        className="text-xs font-medium text-slate-200"
+                      >
+                        ID Model
+                      </label>
                       <Tooltip
                         text="Ketik ID model atau pilih cepat dari katalog live (model gratis :free otomatis didahulukan)."
                         label={`Panduan model ${label(cfg.agentId)}`}
                       />
                     </div>
                     <input
+                      id={`ms-${cfg.agentId}-model`}
                       type="text"
                       value={cfg.model}
                       onChange={(e) =>
@@ -1151,13 +1172,19 @@ export const ModelSettings: React.FC = () => {
                   {/* Mode JSON */}
                   <div>
                     <div className="flex items-center gap-1.5 mb-1">
-                      <label className="text-xs font-medium text-slate-200">Mode JSON</label>
+                      <label
+                        htmlFor={`ms-${cfg.agentId}-jsonMode`}
+                        className="text-xs font-medium text-slate-200"
+                      >
+                        Mode JSON
+                      </label>
                       <Tooltip
                         text="Skema JSON Ketat paling aman menjaga struktur output tetap valid."
                         label={`Panduan JSON ${label(cfg.agentId)}`}
                       />
                     </div>
                     <select
+                      id={`ms-${cfg.agentId}-jsonMode`}
                       value={cfg.jsonMode}
                       onChange={(e) =>
                         dispatch({
@@ -1179,7 +1206,10 @@ export const ModelSettings: React.FC = () => {
                   {/* Temperature Nullable */}
                   <div>
                     <div className="flex items-center gap-1.5 mb-1">
-                      <label className="text-xs font-medium text-slate-200">
+                      <label
+                        htmlFor={`ms-${cfg.agentId}-tempNull`}
+                        className="text-xs font-medium text-slate-200"
+                      >
                         Temperature
                       </label>
                       <Tooltip
@@ -1190,6 +1220,7 @@ export const ModelSettings: React.FC = () => {
                     <div className="space-y-1.5">
                       <label className="flex items-center gap-2 text-[11px] text-slate-300">
                         <input
+                          id={`ms-${cfg.agentId}-tempNull`}
                           type="checkbox"
                           checked={cfg.temperature === null}
                           onChange={(e) =>
@@ -1208,6 +1239,7 @@ export const ModelSettings: React.FC = () => {
                       {cfg.temperature !== null && (
                         <input
                           type="number"
+                          aria-label={`Nilai temperature ${label(cfg.agentId)}`}
                           min={0}
                           max={2}
                           step={0.1}
@@ -1234,10 +1266,14 @@ export const ModelSettings: React.FC = () => {
                 {/* Baris kedua: MaxTokens, Timeout, Pencarian Web */}
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                   <div>
-                    <label className="block text-xs font-medium text-slate-200 mb-1">
+                    <label
+                      htmlFor={`ms-${cfg.agentId}-maxTokens`}
+                      className="block text-xs font-medium text-slate-200 mb-1"
+                    >
                       Max Tokens (128–{MAX_TOKENS_LIMIT})
                     </label>
                     <input
+                      id={`ms-${cfg.agentId}-maxTokens`}
                       type="number"
                       min={128}
                       max={MAX_TOKENS_LIMIT}
@@ -1263,10 +1299,14 @@ export const ModelSettings: React.FC = () => {
                   </div>
 
                   <div>
-                    <label className="block text-xs font-medium text-slate-200 mb-1">
+                    <label
+                      htmlFor={`ms-${cfg.agentId}-timeoutMs`}
+                      className="block text-xs font-medium text-slate-200 mb-1"
+                    >
                       Timeout (ms, maks {TIMEOUT_LIMIT_MS})
                     </label>
                     <input
+                      id={`ms-${cfg.agentId}-timeoutMs`}
                       type="number"
                       min={1000}
                       max={TIMEOUT_LIMIT_MS}
@@ -1313,7 +1353,10 @@ export const ModelSettings: React.FC = () => {
 
                       <div>
                         <div className="flex items-center gap-1.5 mb-1">
-                          <label className="text-xs font-medium text-slate-200">
+                          <label
+                            htmlFor={`ms-${cfg.agentId}-searchMode`}
+                            className="text-xs font-medium text-slate-200"
+                          >
                             Mode Pencarian
                           </label>
                           <Tooltip
@@ -1322,6 +1365,7 @@ export const ModelSettings: React.FC = () => {
                           />
                         </div>
                         <select
+                          id={`ms-${cfg.agentId}-searchMode`}
                           disabled={!cfg.useSearch}
                           value={cfg.searchMode}
                           onChange={(e) =>

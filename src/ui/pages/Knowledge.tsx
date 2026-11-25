@@ -24,10 +24,19 @@ function daysSince(isoDate: string): number {
   return Math.floor((Date.now() - parsed) / (1000 * 60 * 60 * 24));
 }
 
-export const Knowledge: React.FC = () => {
+export interface KnowledgeProps {
+  initialEditingId?: string;
+}
+
+export const Knowledge: React.FC<KnowledgeProps> = ({ initialEditingId }) => {
   const { state, dispatch } = useStore();
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [draft, setDraft] = useState<KnowledgeBlock | null>(null);
+  const initialBlock = initialEditingId
+    ? state.knowledge.find((b) => b.id === initialEditingId) ?? null
+    : null;
+  const [editingId, setEditingId] = useState<string | null>(initialBlock?.id ?? null);
+  const [draft, setDraft] = useState<KnowledgeBlock | null>(
+    initialBlock ? { ...initialBlock } : null
+  );
   const [editError, setEditError] = useState<string | null>(null);
 
   const todayStr = new Date().toISOString().slice(0, 10);
@@ -308,8 +317,11 @@ export const Knowledge: React.FC = () => {
                   <div className="space-y-3 border-t border-slate-800/80 pt-3">
                     <div className="grid gap-3 md:grid-cols-3">
                       <div className="md:col-span-1">
-                        <label className="block text-xs text-slate-300 mb-1">Judul</label>
+                        <label htmlFor={`kb-${block.id}-title`} className="block text-xs text-slate-300 mb-1">
+                          Judul
+                        </label>
                         <input
+                          id={`kb-${block.id}-title`}
                           type="text"
                           maxLength={200}
                           value={draft.title}
@@ -318,10 +330,11 @@ export const Knowledge: React.FC = () => {
                         />
                       </div>
                       <div>
-                        <label className="block text-xs text-slate-300 mb-1">
+                        <label htmlFor={`kb-${block.id}-certainty`} className="block text-xs text-slate-300 mb-1">
                           Tingkat Kepastian
                         </label>
                         <select
+                          id={`kb-${block.id}-certainty`}
                           value={draft.certainty}
                           onChange={(e) =>
                             setDraft({
@@ -339,10 +352,11 @@ export const Knowledge: React.FC = () => {
                         </select>
                       </div>
                       <div>
-                        <label className="block text-xs text-slate-300 mb-1">
+                        <label htmlFor={`kb-${block.id}-verifiedAt`} className="block text-xs text-slate-300 mb-1">
                           Tanggal Verifikasi
                         </label>
                         <input
+                          id={`kb-${block.id}-verifiedAt`}
                           type="date"
                           maxLength={32}
                           value={draft.verifiedAt}
@@ -355,8 +369,11 @@ export const Knowledge: React.FC = () => {
                     </div>
 
                     <div>
-                      <label className="block text-xs text-slate-300 mb-1">Isi Aturan</label>
+                      <label htmlFor={`kb-${block.id}-content`} className="block text-xs text-slate-300 mb-1">
+                        Isi Aturan
+                      </label>
                       <textarea
+                        id={`kb-${block.id}-content`}
                         rows={4}
                         maxLength={4000}
                         value={draft.content}
@@ -366,10 +383,11 @@ export const Knowledge: React.FC = () => {
                     </div>
 
                     <div>
-                      <label className="block text-xs text-slate-300 mb-1">
+                      <label htmlFor={`kb-${block.id}-note`} className="block text-xs text-slate-300 mb-1">
                         Catatan Tambahan (Opsional)
                       </label>
                       <input
+                        id={`kb-${block.id}-note`}
                         type="text"
                         maxLength={1000}
                         value={draft.note ?? ''}

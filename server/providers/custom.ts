@@ -24,63 +24,42 @@ interface OpenAICompatibleResponse {
   };
 }
 
-export const customProvider: LLMProvider = {
-  id: 'custom',
-  name: 'Provider Kustom (OpenAI-Compatible)',
-  capabilities: {
-    jsonSchema: false,
-    jsonObject: true,
-    search: false,
-    video: false,
-    image: false,
-  },
-  isAvailable: () => {
-    const hasKey = getEnv().customApiKey.length > 0;
-    const hasAllowlistedUrl = CUSTOM_PROVIDER_BASE_URL.length > 0;
-    return hasKey && hasAllowlistedUrl;
-  },
-  isTested: () => false,
-  statusNote: () => {
-    if (!CUSTOM_PROVIDER_BASE_URL) {
-      return 'Nonaktif: BASE_URL_ALLOWLIST di server/config.ts belum memiliki URL tepercaya.';
-    }
-    if (!getEnv().customApiKey) {
-      return 'Nonaktif: CUSTOM_API_KEY belum tersedia di environment server.';
-    }
-    return 'Aktif melalui allowlist server, belum teruji.';
-  },
+export async function callCustomChat(
+  req: LLMRequest,
+  model: string,
+  fetchFn: typeof fetch = fetch,
+  baseUrlOverride: string = CUSTOM_PROVIDER_BASE_URL
+): Promise<LLMResponse> {
+  if (!baseUrlOverride) {
+    throw new ProviderCallError(
+      'capability_missing',
+      400,
+      'Provider Kustom tidak tersedia karena belum ada base URL tepercaya pada BASE_URL_ALLOWLIST di server/config.ts.',
+      false
+    );
+  }
 
-  async generate(req: LLMRequest, model: string): Promise<LLMResponse> {
-    if (!CUSTOM_PROVIDER_BASE_URL) {
-      throw new ProviderCallError(
-        'capability_missing',
-        400,
-        'Provider Kustom tidak tersedia karena belum ada base URL tepercaya pada BASE_URL_ALLOWLIST di server/config.ts.',
-        false
-      );
-    }
+  const apiKey = getEnv().customApiKey;
+  if (!apiKey) {
+    throw new ProviderCallError(
+      'capability_missing',
+      400,
+      'CUSTOM_API_KEY belum terkonfigurasi di server.',
+      false
+    );
+  }
 
-    const apiKey = getEnv().customApiKey;
-    if (!apiKey) {
-      throw new ProviderCallError(
-        'capability_missing',
-        400,
-        'CUSTOM_API_KEY belum terkonfigurasi di server.',
-        false
-      );
-    }
+  if (req.media && req.media.length > 0) {
+    throw new ProviderCallError(
+      'capability_missing',
+      400,
+      'Provider Kustom tidak mendukung input video atau gambar.',
+      false
+    );
+  }
 
-    if (req.media && req.media.length > 0) {
-      throw new ProviderCallError(
-        'capability_missing',
-        400,
-        'Provider Kustom tidak mendukung input video atau gambar.',
-        false
-      );
-    }
-
-    const endpoint = `${CUSTOM_PROVIDER_BASE_URL.replace(/\/+$/, '')}/chat/completions`;
-    const payload: Record<string, unknown> = {
+  const endpoint = `${baseUrlOverride.replace(/\/+$/, '')}/chat/completions`;
+  const payload: Record<string, unknown> = {
       model,
       messages: [
         { role: 'system', content: req.system },
@@ -107,7 +86,7 @@ export const customProvider: LLMProvider = {
     const { signal, cleanup, isCallerAborted } = combineAbortSignals(req.signal, req.timeoutMs);
 
     try {
-      const res = await fetch(endpoint, {
+      const res = await fetchFn(endpoint, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${apiKey}`,
@@ -151,23 +130,35 @@ export const customProvider: LLMProvider = {
         );
       }
 
-      if (res.status >= 500) {
+      const rawText = await res.text();
+      let data: OpenAICompatibleResponse | null = null;
+      if (rawText.trim().length > 0) {
+        try {
+          data = JSON.parse(rawText) as OpenAICompatibleResponse;
+        } catch {
+          data = null;
+        }
+      }
+
+      if (!res.ok || data?.error) {
+        const snippet = sanitizeErrorMessage(data?.error?.message || rawText || 'Permintaan gagal.', 200);
         throw new ProviderCallError(
           'provider_error',
           502,
-          `Provider kustom mengembalikan error server HTTP ${res.status}.`,
-          true,
-          { errorKind: 'upstream_internal_error', upstreamStatus: res.status }
+          `Provider kustom error (${res.status}): ${snippet}`,
+          res.status >= 500,
+          { upstreamStatus: res.status, sanitizedMessage: snippet }
         );
       }
 
-      const data = (await res.json()) as OpenAICompatibleResponse;
-      if (!res.ok || data.error) {
+      if (!data) {
+        const snippet = sanitizeErrorMessage(rawText, 200);
         throw new ProviderCallError(
           'provider_error',
           502,
-          `Provider kustom error (${res.status}): ${sanitizeErrorMessage(data.error?.message || 'Permintaan gagal.')}`,
-          false
+          `Respons provider kustom bukan JSON yang valid (HTTP ${res.status}): ${snippet || 'kosong'}`,
+          false,
+          { upstreamStatus: res.status, sanitizedMessage: snippet }
         );
       }
 
@@ -202,6 +193,36 @@ export const customProvider: LLMProvider = {
     } finally {
       cleanup();
     }
+}
+
+export const customProvider: LLMProvider = {
+  id: 'custom',
+  name: 'Provider Kustom (OpenAI-Compatible)',
+  capabilities: {
+    jsonSchema: false,
+    jsonObject: true,
+    search: false,
+    video: false,
+    image: false,
+  },
+  isAvailable: () => {
+    const hasKey = getEnv().customApiKey.length > 0;
+    const hasAllowlistedUrl = CUSTOM_PROVIDER_BASE_URL.length > 0;
+    return hasKey && hasAllowlistedUrl;
+  },
+  isTested: () => false,
+  statusNote: () => {
+    if (!CUSTOM_PROVIDER_BASE_URL) {
+      return 'Nonaktif: BASE_URL_ALLOWLIST di server/config.ts belum memiliki URL tepercaya.';
+    }
+    if (!getEnv().customApiKey) {
+      return 'Nonaktif: CUSTOM_API_KEY belum tersedia di environment server.';
+    }
+    return 'Aktif melalui allowlist server, belum teruji.';
+  },
+
+  async generate(req: LLMRequest, model: string): Promise<LLMResponse> {
+    return callCustomChat(req, model);
   },
 
   async testConnection(model: string): Promise<{ latencyMs: number; message: string }> {

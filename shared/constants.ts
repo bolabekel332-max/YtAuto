@@ -69,3 +69,21 @@ export const MAX_RECENT_VIDEOS = 3;
 export const MAX_AUDIT_VIDEOS = 10;
 export const KNOWLEDGE_STALE_DAYS = 30;
 export const MODEL_ID_REGEX = /^[A-Za-z0-9._:/-]+$/;
+
+export const DEFAULT_GEMINI_MODEL = 'gemini-4-hydrogen';
+
+export const AUTO_FREE_FALLBACK_MODELS = {
+  apinex: 'free/gemini-4-hydrogen',
+  openrouter: 'nvidia/nemotron-3-ultra-550b-a55b:free',
+  nous: 'qwen/qwen4-max:free',
+} as const;
+
+export const PROVIDER_CAPABILITIES = {
+  mock: { jsonSchema: true, jsonObject: true, search: false, video: false, image: false },
+  gemini: { jsonSchema: true, jsonObject: true, search: true, video: true, image: true },
+  openrouter: { jsonSchema: true, jsonObject: true, search: true, video: false, image: true },
+  nous: { jsonSchema: true, jsonObject: true, search: false, video: false, image: true },
+  apinex: { jsonSchema: true, jsonObject: true, search: true, video: false, image: true },
+  custom: { jsonSchema: false, jsonObject: true, search: false, video: false, image: false },
+} as const;
+

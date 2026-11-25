@@ -1,4 +1,4 @@
-import { MAX_TOKENS_LIMIT, PROVIDER_IDS } from '../shared/constants';
+import { DEFAULT_GEMINI_MODEL, MAX_TOKENS_LIMIT, PROVIDER_IDS } from '../shared/constants';
 import type { ProviderId } from '../shared/schemas';
 
 export interface ServerEnv {
@@ -8,9 +8,11 @@ export interface ServerEnv {
   openrouterApiKey: string;
   nousApiKey: string;
   nousOauthClientId: string;
+  enableNousOAuth: boolean;
   apinexApiKey: string;
   customApiKey: string;
   rateLimitPerMin: number;
+  strictRateLimitPerMin: number;
   dailyCallCap: number;
   dailyTokenCap: number;
   serverMaxTokensCap: number;
@@ -19,6 +21,7 @@ export interface ServerEnv {
   isProd: boolean;
   trustProxy: boolean | number;
   geminiModelAllowlist: string[];
+  autoFreeFallback: boolean;
 }
 
 export const PROVIDER_ALLOWLIST: readonly ProviderId[] = PROVIDER_IDS;
@@ -31,6 +34,23 @@ export const PROVIDER_ALLOWLIST: readonly ProviderId[] = PROVIDER_IDS;
 export const BASE_URL_ALLOWLIST: readonly string[] = [];
 
 export const CUSTOM_PROVIDER_BASE_URL: string = BASE_URL_ALLOWLIST[0] ?? '';
+
+export function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  return normalized === '127.0.0.1' || normalized === 'localhost' || normalized === '::1';
+}
+
+export function getEffectiveGeminiModelAllowlist(
+  env: Pick<ServerEnv, 'host' | 'geminiModelAllowlist'> = getEnv()
+): string[] {
+  if (env.geminiModelAllowlist.length > 0) {
+    return env.geminiModelAllowlist;
+  }
+  if (!isLoopbackHost(env.host)) {
+    return [DEFAULT_GEMINI_MODEL];
+  }
+  return [];
+}
 
 function parsePositiveInt(raw: string | undefined, fallback: number): number {
   if (!raw) return fallback;
@@ -79,9 +99,11 @@ export function getEnv(): ServerEnv {
     openrouterApiKey: (process.env.OPENROUTER_API_KEY ?? '').trim(),
     nousApiKey: (process.env.NOUS_API_KEY ?? '').trim(),
     nousOauthClientId: (process.env.NOUS_OAUTH_CLIENT_ID ?? '').trim() || 'hermes-cli',
+    enableNousOAuth: (process.env.ENABLE_NOUS_OAUTH ?? '').trim().toLowerCase() === 'true',
     apinexApiKey: (process.env.APINEX_API_KEY ?? '').trim(),
     customApiKey: (process.env.CUSTOM_API_KEY ?? '').trim(),
     rateLimitPerMin: parsePositiveInt(process.env.RATE_LIMIT_PER_MIN, 20),
+    strictRateLimitPerMin: parsePositiveInt(process.env.STRICT_RATE_LIMIT_PER_MIN, 6),
     dailyCallCap: parsePositiveInt(process.env.DAILY_CALL_CAP, 300),
     dailyTokenCap: parsePositiveInt(process.env.DAILY_TOKEN_CAP, 2_000_000),
     serverMaxTokensCap: Math.min(MAX_TOKENS_LIMIT, rawMaxTokensCap),
@@ -90,5 +112,6 @@ export function getEnv(): ServerEnv {
     isProd: isProdMode(nodeEnv, process.argv),
     trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
     geminiModelAllowlist,
+    autoFreeFallback: (process.env.AUTO_FREE_FALLBACK ?? '').trim().toLowerCase() !== 'false',
   };
 }

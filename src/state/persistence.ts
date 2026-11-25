@@ -25,6 +25,7 @@ import {
 export const STORAGE_KEY = 'faceless_studio_state_v1';
 export const CORRUPT_BACKUP_KEY = 'faceless_studio_state_corrupt_backup_v1';
 export const MAX_IMPORT_BYTES = 15 * 1024 * 1024;
+export const MAX_CORRUPT_BACKUP_BYTES = 2 * 1024 * 1024;
 
 export interface PersistedAppData {
   profile: ChannelProfile;
@@ -55,13 +56,86 @@ function isQuotaError(err: unknown): boolean {
   );
 }
 
-function backupCorruptRawPayload(raw: string): void {
+interface BackupCorruptResult {
+  backedUp: boolean;
+  truncated: boolean;
+  overwrittenPrevious: boolean;
+}
+
+function byteLengthOf(text: string): number {
+  if (typeof TextEncoder !== 'undefined') {
+    return new TextEncoder().encode(text).length;
+  }
+  return text.length * 2;
+}
+
+function extractEntryCounts(raw: string): Record<string, number> | undefined {
   try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(CORRUPT_BACKUP_KEY, raw);
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    const counts: Record<string, number> = {};
+    for (const [key, val] of Object.entries(parsed as Record<string, unknown>)) {
+      if (Array.isArray(val)) counts[key] = val.length;
+      else if (val !== null && val !== undefined) counts[key] = 1;
     }
+    return counts;
+  } catch {
+    return undefined;
+  }
+}
+
+function backupCorruptRawPayload(raw: string): BackupCorruptResult {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) {
+      return { backedUp: false, truncated: false, overwrittenPrevious: false };
+    }
+    const overwrittenPrevious = window.localStorage.getItem(CORRUPT_BACKUP_KEY) !== null;
+    const rawBytes = byteLengthOf(raw);
+    let toStore = raw;
+    let truncated = false;
+
+    if (raw.length > MAX_CORRUPT_BACKUP_BYTES || rawBytes > MAX_CORRUPT_BACKUP_BYTES) {
+      truncated = true;
+      const entryCounts = extractEntryCounts(raw);
+      toStore = JSON.stringify({
+        truncated: true,
+        originalBytes: rawBytes,
+        backedUpAt: new Date().toISOString(),
+        ...(entryCounts ? { entryCounts } : {}),
+        preview: raw.slice(0, 1024),
+      });
+    }
+
+    window.localStorage.setItem(CORRUPT_BACKUP_KEY, toStore);
+    return { backedUp: true, truncated, overwrittenPrevious };
   } catch {
     // Abaikan jika kuota penyimpanan penuh saat membuat cadangan korup
+    return { backedUp: false, truncated: false, overwrittenPrevious: false };
+  }
+}
+
+export function getCorruptBackup(): string | null {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return window.localStorage.getItem(CORRUPT_BACKUP_KEY);
+    }
+  } catch {
+    // Abaikan error akses localStorage
+  }
+  return null;
+}
+
+export function hasCorruptBackup(): boolean {
+  return getCorruptBackup() !== null;
+}
+
+export function clearCorruptBackup(): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.removeItem(CORRUPT_BACKUP_KEY);
+    }
+  } catch {
+    // Abaikan error akses localStorage
   }
 }
 
@@ -100,22 +174,37 @@ export function save(data: PersistedAppData): { ok: boolean; warning?: string } 
     }
 
     const working = { ...normalized, history: [...normalized.history] };
+    let clearedCorruptBackup = false;
     while (true) {
       try {
         window.localStorage.setItem(STORAGE_KEY, JSON.stringify(working));
+        const warnings: string[] = [];
+        if (clearedCorruptBackup) {
+          warnings.push('cadangan data korup lama dihapus otomatis untuk memberi ruang penyimpanan');
+        }
+        if (working.history.length < normalized.history.length) {
+          warnings.push(
+            `${normalized.history.length - working.history.length} entri Riwayat tertua dihapus otomatis`
+          );
+        }
         return {
           ok: true,
           warning:
-            working.history.length < normalized.history.length
-              ? `Kuota penyimpanan browser penuh; ${
-                  normalized.history.length - working.history.length
-                } entri Riwayat tertua dihapus otomatis.`
+            warnings.length > 0
+              ? `Kuota penyimpanan browser penuh; ${warnings.join(' dan ')}.`
               : undefined,
         };
       } catch (err) {
-        if (isQuotaError(err) && working.history.length > 0) {
-          working.history.pop(); // Entri terbaru berada di depan, tertua di belakang
-          continue;
+        if (isQuotaError(err)) {
+          if (!clearedCorruptBackup && window.localStorage.getItem(CORRUPT_BACKUP_KEY) !== null) {
+            window.localStorage.removeItem(CORRUPT_BACKUP_KEY);
+            clearedCorruptBackup = true;
+            continue;
+          }
+          if (working.history.length > 0) {
+            working.history.pop(); // Entri terbaru berada di depan, tertua di belakang
+            continue;
+          }
         }
         throw err;
       }
@@ -183,20 +272,36 @@ export function load(): { data: Partial<PersistedAppData> | null; warning?: stri
     try {
       parsedRaw = JSON.parse(raw);
     } catch {
-      backupCorruptRawPayload(raw);
+      const backupInfo = backupCorruptRawPayload(raw);
+      const extraNotes: string[] = [];
+      if (backupInfo.overwrittenPrevious) {
+        extraNotes.push('cadangan korup sebelumnya ditimpa (maksimal 1 cadangan disimpan)');
+      }
+      if (backupInfo.truncated) {
+        extraNotes.push('ukuran >2 MB sehingga hanya ringkasan diagnostik yang dicadangkan');
+      }
       return {
         data: inMemoryFallback,
-        warning:
-          'Data tersimpan di localStorage rusak (JSON tidak valid); salinan mentah dicadangkan sementara dan konfigurasi awal dimuat.',
+        warning: `Data tersimpan di localStorage rusak (JSON tidak valid); salinan dicadangkan sementara dan konfigurasi awal dimuat${
+          extraNotes.length > 0 ? ` (${extraNotes.join('; ')})` : ''
+        }.`,
       };
     }
 
     if (!parsedRaw || typeof parsedRaw !== 'object' || Array.isArray(parsedRaw)) {
-      backupCorruptRawPayload(raw);
+      const backupInfo = backupCorruptRawPayload(raw);
+      const extraNotes: string[] = [];
+      if (backupInfo.overwrittenPrevious) {
+        extraNotes.push('cadangan korup sebelumnya ditimpa (maksimal 1 cadangan disimpan)');
+      }
+      if (backupInfo.truncated) {
+        extraNotes.push('ukuran >2 MB sehingga hanya ringkasan diagnostik yang dicadangkan');
+      }
       return {
         data: inMemoryFallback,
-        warning:
-          'Format data tersimpan di localStorage tidak valid; salinan mentah dicadangkan sementara dan konfigurasi awal dimuat.',
+        warning: `Format data tersimpan di localStorage tidak valid; salinan dicadangkan sementara dan konfigurasi awal dimuat${
+          extraNotes.length > 0 ? ` (${extraNotes.join('; ')})` : ''
+        }.`,
       };
     }
 
@@ -254,15 +359,26 @@ export function load(): { data: Partial<PersistedAppData> | null; warning?: stri
     trySection('lastExportedAt', 'Waktu Ekspor', z.string());
     trySection('changesSinceExport', 'Penghitung Perubahan', z.number().int().min(0));
 
+    let backupInfo: BackupCorruptResult | undefined;
     if (resetSections.length > 0) {
-      backupCorruptRawPayload(raw);
+      backupInfo = backupCorruptRawPayload(raw);
+    }
+
+    const backupDetails: string[] = [];
+    if (backupInfo?.overwrittenPrevious) {
+      backupDetails.push('cadangan korup sebelumnya ditimpa');
+    }
+    if (backupInfo?.truncated) {
+      backupDetails.push('cadangan >2 MB diringkas');
     }
 
     return {
       data: clean,
       warning:
         resetSections.length > 0
-          ? `Sebagian data lokal bermasalah sehingga direset/dilewati (salinan mentah dicadangkan di browser): ${resetSections.join(', ')}.`
+          ? `Sebagian data lokal bermasalah sehingga direset/dilewati (cadangan tersimpan di browser${
+              backupDetails.length > 0 ? `: ${backupDetails.join(', ')}` : ''
+            }): ${resetSections.join(', ')}.`
           : undefined,
     };
   } catch {
@@ -273,16 +389,13 @@ export function load(): { data: Partial<PersistedAppData> | null; warning?: stri
   }
 }
 
-/**
- * Mengekspor seluruh data persisten (tanpa kunci API server, tanpa video, dan tanpa frame).
- */
-export function exportAll(data: PersistedAppData): ExportFile {
+export function buildRawExportPayload(data: PersistedAppData): ExportFile {
   const normalizedHistory = data.history.slice(0, HISTORY_MAX).map((entry) => ({
     ...entry,
     run: normalizeRunForPersistence(entry.run),
   }));
 
-  const payload: ExportFile = {
+  return {
     schemaVersion: EXPORT_SCHEMA_VERSION,
     exportedAt: new Date().toISOString(),
     profile: data.profile,
@@ -295,8 +408,13 @@ export function exportAll(data: PersistedAppData): ExportFile {
     ...(data.lastAudit ? { lastAudit: data.lastAudit } : {}),
     ...(data.lastAnalysis ? { lastAnalysis: data.lastAnalysis } : {}),
   };
+}
 
-  return ExportFileSchema.parse(payload);
+/**
+ * Mengekspor seluruh data persisten (tanpa kunci API server, tanpa video, dan tanpa frame).
+ */
+export function exportAll(data: PersistedAppData): ExportFile {
+  return ExportFileSchema.parse(buildRawExportPayload(data));
 }
 
 /**

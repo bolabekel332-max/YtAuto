@@ -25,6 +25,8 @@ export interface LLMRequest {
   timeoutMs: number;
   media?: LLMMediaItem[];
   signal?: AbortSignal;
+  promptNonce?: string;
+  searchQuery?: string;
 }
 
 export interface LLMResponse {
@@ -120,6 +122,63 @@ export function sanitizeErrorMessage(raw: unknown, maxLen = 280): string {
 
   if (redacted.length <= maxLen) return redacted;
   return `${redacted.slice(0, maxLen - 3)}...`;
+}
+
+const MAX_SANITIZED_SOURCES = 20;
+const MAX_SOURCE_URL_LEN = 2000;
+const MAX_SOURCE_TITLE_LEN = 200;
+
+function cleanSourceTitle(rawTitle: unknown, fallbackUrl: string): string {
+  const base =
+    typeof rawTitle === 'string'
+      ? rawTitle.replace(/[\u0000-\u001F\u007F]+/g, ' ').replace(/\s+/g, ' ').trim()
+      : '';
+  const chosen = base || fallbackUrl;
+  return chosen.slice(0, MAX_SOURCE_TITLE_LEN);
+}
+
+export function sanitizeSources(
+  rawSources: Array<{ title?: unknown; url?: unknown }> | undefined
+): Array<{ title: string; url: string }> {
+  if (!Array.isArray(rawSources) || rawSources.length === 0) {
+    return [];
+  }
+
+  const out: Array<{ title: string; url: string }> = [];
+  const seenUrls = new Set<string>();
+
+  for (const item of rawSources) {
+    if (!item || typeof item.url !== 'string') continue;
+    const rawUrl = item.url.trim();
+    if (!rawUrl || rawUrl.length > MAX_SOURCE_URL_LEN) continue;
+
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      continue;
+    }
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      continue;
+    }
+
+    const normalizedUrl = parsed.toString();
+    if (normalizedUrl.length > MAX_SOURCE_URL_LEN) continue;
+    if (seenUrls.has(normalizedUrl)) continue;
+
+    seenUrls.add(normalizedUrl);
+    out.push({
+      title: cleanSourceTitle(item.title, normalizedUrl),
+      url: normalizedUrl,
+    });
+
+    if (out.length >= MAX_SANITIZED_SOURCES) {
+      break;
+    }
+  }
+
+  return out;
 }
 
 export class ProviderCallError extends Error {

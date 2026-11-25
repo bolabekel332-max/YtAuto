@@ -91,8 +91,8 @@ export function rateLimiter(req: Request, res: Response, next: NextFunction): vo
 }
 
 export function strictRateLimiter(req: Request, res: Response, next: NextFunction): void {
-  const { rateLimitPerMin } = getEnv();
-  const strictLimit = Math.max(5, Math.floor(rateLimitPerMin / 2));
+  const { strictRateLimitPerMin } = getEnv();
+  const strictLimit = strictRateLimitPerMin;
   const ip = getClientIp(req);
   const now = Date.now();
   const existing = strictRateCounters.get(ip);

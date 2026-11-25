@@ -13,6 +13,11 @@ import {
 } from 'lucide-react';
 import type { ScreenId } from '../../state/store';
 import { usePipeline } from '../../state/pipelineContext';
+import {
+  clearCorruptBackup,
+  getCorruptBackup,
+  hasCorruptBackup,
+} from '../../state/persistence';
 import { useStore } from '../../state/store';
 import { Banner } from './Banner';
 import { Header } from './Header';
@@ -90,11 +95,38 @@ export interface AppShellProps {
 }
 
 export const AppShell: React.FC<AppShellProps> = ({ children }) => {
-  const { state, dispatch, reloadFromStorage } = useStore();
+  const {
+    state,
+    dispatch,
+    reloadFromStorage,
+    overwriteStorageFromCurrentTab,
+  } = useStore();
   const { isBusy } = usePipeline();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [, setCorruptBackupTick] = useState(0);
 
   const activeNav = NAV_ITEMS.find((n) => n.id === state.currentScreen) ?? NAV_ITEMS[0];
+  const corruptBackupExists = hasCorruptBackup();
+
+  const handleDownloadCorruptBackup = () => {
+    const raw = getCorruptBackup();
+    if (!raw) return;
+    const blob = new Blob([raw], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    try {
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `faceless-studio-corrupt-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      anchor.click();
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  const handleClearCorruptBackup = () => {
+    clearCorruptBackup();
+    setCorruptBackupTick((v) => v + 1);
+  };
 
   const handleNavigate = (screen: ScreenId) => {
     dispatch({ type: 'SET_SCREEN', screen });
@@ -189,7 +221,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
             Privasi &amp; Data
           </summary>
           <p className="mt-2 leading-relaxed text-[11px] text-slate-400">
-            Kunci API dan token OAuth disimpan hanya di server dan tidak dikirim ke browser. Profil channel, pengaturan model, dan riwayat run disimpan di browser (<code className="text-slate-300">localStorage</code>). Video mentah tetap di browser; hanya frame ringkas atau metrik terstruktur yang dikirim ke server saat Anda menjalankan analisis.
+            Kunci API dan token OAuth disimpan hanya di server dan tidak dikirim ke browser. Profil channel, pengaturan model, dan riwayat run disimpan di browser (<code className="text-slate-300">localStorage</code>). Video mentah tetap di browser; namun prompt, input topik, frame gambar ringkas, metrik tempel, dan kueri pencarian web dikirim ke provider AI pihak ketiga yang Anda pilih (termasuk Gemini, OpenRouter, Nous Portal, APInex, atau endpoint kustom) dengan kebijakan retensi data masing-masing penyedia.
           </p>
         </details>
       </aside>
@@ -239,14 +271,45 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
               title="Peringatan Penyimpanan Browser"
               message={state.storageWarning}
               action={
-                state.storageConflict ? (
-                  <button
-                    type="button"
-                    onClick={reloadFromStorage}
-                    className="rounded-md bg-amber-400 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-amber-300"
-                  >
-                    Muat Data Tab Terbaru
-                  </button>
+                state.storageConflict || corruptBackupExists ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {state.storageConflict && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={reloadFromStorage}
+                          className="rounded-md bg-amber-400 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-amber-300"
+                        >
+                          Muat data tab terbaru
+                        </button>
+                        <button
+                          type="button"
+                          onClick={overwriteStorageFromCurrentTab}
+                          className="rounded-md border border-amber-400/50 bg-amber-950/60 px-3 py-1.5 text-xs font-medium text-amber-100 hover:bg-amber-900/70"
+                        >
+                          Timpa dengan data tab ini
+                        </button>
+                      </>
+                    )}
+                    {corruptBackupExists && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={handleDownloadCorruptBackup}
+                          className="rounded-md border border-amber-400/50 bg-amber-950/60 px-3 py-1.5 text-xs font-medium text-amber-100 hover:bg-amber-900/70"
+                        >
+                          Unduh cadangan korup
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleClearCorruptBackup}
+                          className="rounded-md border border-rose-400/40 bg-rose-950/60 px-3 py-1.5 text-xs font-medium text-rose-100 hover:bg-rose-900/70"
+                        >
+                          Hapus cadangan
+                        </button>
+                      </>
+                    )}
+                  </div>
                 ) : undefined
               }
               onDismiss={() =>

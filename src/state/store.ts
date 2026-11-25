@@ -140,6 +140,7 @@ export type AppAction =
   | { type: 'IMPORT_ALL'; file: ExportFile }
   | { type: 'CLEAR_LOCAL_DATA' }
   | { type: 'RELOAD_FROM_STORAGE'; loaded: AppState }
+  | { type: 'RESOLVE_STORAGE_CONFLICT_OVERWRITE' }
   | { type: 'SET_STORAGE_WARNING'; warning?: string; conflict?: boolean };
 
 const NON_MUTATING_ACTIONS = new Set<AppAction['type']>([
@@ -148,6 +149,7 @@ const NON_MUTATING_ACTIONS = new Set<AppAction['type']>([
   'SET_STORAGE_WARNING',
   'CLEAR_LOCAL_DATA',
   'RELOAD_FROM_STORAGE',
+  'RESOLVE_STORAGE_CONFLICT_OVERWRITE',
 ]);
 
 export function appReducer(state: AppState, action: AppAction): AppState {
@@ -161,7 +163,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         profile: action.profile,
         profileConfigured: true,
         changesSinceExport: state.changesSinceExport + 1,
-        storageConflict: false,
       };
 
     case 'SET_DRAFT_RUN_INPUT':
@@ -172,7 +173,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         styleReferences: [action.reference, ...state.styleReferences],
         changesSinceExport: state.changesSinceExport + 1,
-        storageConflict: false,
       };
 
     case 'UPDATE_STYLE_REFERENCE':
@@ -182,7 +182,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           r.id === action.id ? { ...r, ...action.patch } : r
         ),
         changesSinceExport: state.changesSinceExport + 1,
-        storageConflict: false,
       };
 
     case 'REMOVE_STYLE_REFERENCE':
@@ -190,7 +189,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         styleReferences: state.styleReferences.filter((r) => r.id !== action.id),
         changesSinceExport: state.changesSinceExport + 1,
-        storageConflict: false,
       };
 
     case 'UPSERT_STYLE_PROFILE': {
@@ -201,7 +199,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           ? state.styleProfiles.map((p) => (p.id === action.profile.id ? action.profile : p))
           : [action.profile, ...state.styleProfiles],
         changesSinceExport: state.changesSinceExport + 1,
-        storageConflict: false,
       };
     }
 
@@ -210,7 +207,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         styleProfiles: state.styleProfiles.filter((p) => p.id !== action.id),
         changesSinceExport: state.changesSinceExport + 1,
-        storageConflict: false,
       };
 
     case 'UPDATE_MODEL_CONFIG':
@@ -220,7 +216,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           c.agentId === action.agentId ? { ...c, ...action.patch } : c
         ),
         changesSinceExport: state.changesSinceExport + 1,
-        storageConflict: false,
       };
 
     case 'SET_MODEL_CONFIGS':
@@ -228,7 +223,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         modelConfigs: action.configs,
         changesSinceExport: state.changesSinceExport + 1,
-        storageConflict: false,
       };
 
     case 'UPDATE_KNOWLEDGE_BLOCK':
@@ -238,17 +232,15 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           b.id === action.id ? { ...b, ...action.patch } : b
         ),
         changesSinceExport: state.changesSinceExport + 1,
-        storageConflict: false,
       };
 
     case 'SET_ACTIVE_RUN':
-      return { ...state, activeRun: action.run, storageConflict: false };
+      return { ...state, activeRun: action.run };
 
     case 'UPDATE_ACTIVE_RUN_STEP': {
       if (!state.activeRun) return state;
       return {
         ...state,
-        storageConflict: false,
         activeRun: {
           ...state.activeRun,
           steps: {
@@ -266,7 +258,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         history: nextHistory,
         changesSinceExport: state.changesSinceExport + 1,
-        storageConflict: false,
       };
     }
 
@@ -276,7 +267,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         history: state.history.filter((h) => h.id !== action.id),
         activeRun: state.activeRun?.id === action.id ? null : state.activeRun,
         changesSinceExport: state.changesSinceExport + 1,
-        storageConflict: false,
       };
 
     case 'UPDATE_HISTORY_SELECTION':
@@ -286,7 +276,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           h.id === action.id ? { ...h, selection: action.selection } : h
         ),
         changesSinceExport: state.changesSinceExport + 1,
-        storageConflict: false,
       };
 
     case 'SET_LAST_IDEAS':
@@ -294,7 +283,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         lastIdeas: action.result,
         changesSinceExport: state.changesSinceExport + 1,
-        storageConflict: false,
       };
 
     case 'SET_LAST_AUDIT':
@@ -302,7 +290,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         lastAudit: action.result,
         changesSinceExport: state.changesSinceExport + 1,
-        storageConflict: false,
       };
 
     case 'SET_LAST_ANALYSIS':
@@ -310,7 +297,6 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         lastAnalysis: action.result,
         changesSinceExport: state.changesSinceExport + 1,
-        storageConflict: false,
       };
 
     case 'MARK_EXPORTED':
@@ -348,6 +334,13 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         storageConflict: false,
       };
 
+    case 'RESOLVE_STORAGE_CONFLICT_OVERWRITE':
+      return {
+        ...state,
+        storageConflict: false,
+        storageWarning: undefined,
+      };
+
     case 'SET_STORAGE_WARNING':
       return {
         ...state,
@@ -360,10 +353,18 @@ export function appReducer(state: AppState, action: AppAction): AppState {
   }
 }
 
+export function shouldFlushPendingSave(flags: {
+  hasUserMutations: boolean;
+  externalTabConflict: boolean;
+}): boolean {
+  return flags.hasUserMutations && !flags.externalTabConflict;
+}
+
 export interface StoreContextValue {
   state: AppState;
   dispatch: React.Dispatch<AppAction>;
   reloadFromStorage: () => void;
+  overwriteStorageFromCurrentTab: () => void;
 }
 
 const StoreContext = createContext<StoreContextValue | null>(null);
@@ -404,9 +405,27 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return;
     }
 
+    if (action.type === 'RESOLVE_STORAGE_CONFLICT_OVERWRITE') {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+      externalTabConflictRef.current = false;
+      hasUserMutationsRef.current = true;
+      rawDispatch(action);
+      const result = save(snapshotRef.current);
+      if (result.warning) {
+        rawDispatch({ type: 'SET_STORAGE_WARNING', warning: result.warning, conflict: false });
+      }
+      return;
+    }
+
+    if (action.type === 'IMPORT_ALL') {
+      externalTabConflictRef.current = false;
+    }
+
     if (!NON_MUTATING_ACTIONS.has(action.type)) {
       hasUserMutationsRef.current = true;
-      externalTabConflictRef.current = false;
     }
 
     rawDispatch(action);
@@ -417,12 +436,21 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     dispatch({ type: 'RELOAD_FROM_STORAGE', loaded: next });
   }, [dispatch]);
 
+  const overwriteStorageFromCurrentTab = useCallback(() => {
+    dispatch({ type: 'RESOLVE_STORAGE_CONFLICT_OVERWRITE' });
+  }, [dispatch]);
+
   useEffect(() => {
     if (skipInitialSaveRef.current) {
       skipInitialSaveRef.current = false;
       return;
     }
-    if (!hasUserMutationsRef.current || externalTabConflictRef.current) {
+    if (
+      !shouldFlushPendingSave({
+        hasUserMutations: hasUserMutationsRef.current,
+        externalTabConflict: externalTabConflictRef.current,
+      })
+    ) {
       return;
     }
 
@@ -432,7 +460,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     debounceTimerRef.current = setTimeout(() => {
       debounceTimerRef.current = null;
-      if (!hasUserMutationsRef.current || externalTabConflictRef.current) {
+      if (
+        !shouldFlushPendingSave({
+          hasUserMutations: hasUserMutationsRef.current,
+          externalTabConflict: externalTabConflictRef.current,
+        })
+      ) {
         return;
       }
       const result = save(snapshotRef.current);
@@ -470,7 +503,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         debounceTimerRef.current = null;
       }
       // Jangan menimpa data korup yang belum disunting atau data yang baru diubah tab lain (F-21, F-22)
-      if (!hasUserMutationsRef.current || externalTabConflictRef.current) {
+      if (
+        !shouldFlushPendingSave({
+          hasUserMutations: hasUserMutationsRef.current,
+          externalTabConflict: externalTabConflictRef.current,
+        })
+      ) {
         return;
       }
       save(snapshotRef.current);
@@ -511,7 +549,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   return React.createElement(
     StoreContext.Provider,
-    { value: { state, dispatch, reloadFromStorage } },
+    { value: { state, dispatch, reloadFromStorage, overwriteStorageFromCurrentTab } },
     children
   );
 };

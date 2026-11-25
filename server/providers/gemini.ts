@@ -4,6 +4,7 @@ import {
   combineAbortSignals,
   ProviderCallError,
   sanitizeErrorMessage,
+  sanitizeSources,
   type LLMProvider,
   type LLMRequest,
   type LLMResponse,
@@ -709,18 +710,19 @@ export const geminiProvider: LLMProvider = {
       const tokens = response.usageMetadata?.totalTokenCount;
 
       const groundingChunks = candidate?.groundingMetadata?.groundingChunks;
-      const sources: Array<{ title: string; url: string }> = [];
+      const rawSources: Array<{ title: string; url: string }> = [];
       if (Array.isArray(groundingChunks)) {
         for (const chunk of groundingChunks) {
           const web = (chunk as { web?: { uri?: string; title?: string } }).web;
           if (web?.uri) {
-            sources.push({
+            rawSources.push({
               title: web.title || web.uri,
               url: web.uri,
             });
           }
         }
       }
+      const sources = sanitizeSources(rawSources);
 
       if (finishReason === 'MAX_TOKENS') {
         return {

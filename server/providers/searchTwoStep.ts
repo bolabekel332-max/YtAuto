@@ -1,6 +1,12 @@
 import { wrapAsData } from '../promptBuilder';
 import { withRetryAndFallback } from './retry';
-import { ProviderCallError, type LLMProvider, type LLMRequest, type LLMResponse } from './types';
+import {
+  ProviderCallError,
+  sanitizeSources,
+  type LLMProvider,
+  type LLMRequest,
+  type LLMResponse,
+} from './types';
 
 export interface TwoStepResult {
   response: LLMResponse;
@@ -55,6 +61,8 @@ export async function runTwoStep(params: {
     useSearch: true,
     timeoutMs: baseRequest.timeoutMs,
     signal: baseRequest.signal,
+    promptNonce: baseRequest.promptNonce,
+    searchQuery: baseRequest.searchQuery,
   };
 
   let step1;
@@ -82,7 +90,7 @@ export async function runTwoStep(params: {
   const notesText =
     step1.response.text ??
     (step1.response.json ? JSON.stringify(step1.response.json) : 'Tidak ada catatan pencarian.');
-  const gatheredSources = step1.response.sources ?? [];
+  const gatheredSources = sanitizeSources(step1.response.sources);
   const searchStatusNote =
     gatheredSources.length === 0
       ? 'Pencarian web langkah 1 tidak mengembalikan tautan sumber grounding dari server. Perlakukan catatan berikut sebagai belum terverifikasi oleh URL web server dan nyatakan keterbatasan bila fakta butuh sumber terkini.'
@@ -115,10 +123,11 @@ export async function runTwoStep(params: {
     beforeModelCall
   );
 
-  const mergedSources =
+  const mergedSources = sanitizeSources(
     step2.response.sources && step2.response.sources.length > 0
       ? step2.response.sources
-      : gatheredSources;
+      : gatheredSources
+  );
 
   const totalTokens = (step1.response.tokens ?? 0) + (step2.response.tokens ?? 0);
 

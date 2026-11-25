@@ -1,15 +1,17 @@
 import React from 'react';
 import { AlertTriangle, Bot, Clock, Cpu, ExternalLink, FlaskConical, Globe } from 'lucide-react';
-import type {
-  AnalystOutput,
-  AuditOutput,
-  ComplianceOutput,
-  OrchestratorOutput,
-  PackagingOutput,
-  ResearcherOutput,
-  ScriptwriterOutput,
-  StyleAnalystOutput,
-  VisualOutput,
+import { schemaIdFor } from '../../../shared/agentRegistry';
+import {
+  OUTPUT_SCHEMAS,
+  type AnalystOutput,
+  type AuditOutput,
+  type ComplianceOutput,
+  type OrchestratorOutput,
+  type PackagingOutput,
+  type ResearcherOutput,
+  type ScriptwriterOutput,
+  type StyleAnalystOutput,
+  type VisualOutput,
 } from '../../../shared/agentSchemas';
 import type { AgentResult, ComplianceVerdict } from '../../../shared/schemas';
 import { label } from '../../config/labels';
@@ -94,17 +96,32 @@ export const AgentOutput: React.FC<AgentOutputProps> = ({
   const groundedCount = result.groundedSourceCount ?? serverSources.length;
 
   const renderBody = () => {
-    const out = result.output;
-    if (!out || typeof out !== 'object' || Array.isArray(out)) {
+    const schemaId = schemaIdFor(result.agentId, mode);
+    const parsed = OUTPUT_SCHEMAS[schemaId].safeParse(result.output);
+    if (!parsed.success) {
+      const issueSummary = parsed.error.issues
+        .slice(0, 3)
+        .map((i) => `${i.path.join('.') || 'root'}: ${i.message}`)
+        .join('; ');
       return (
         <div
           role="alert"
-          className="rounded-xl border border-amber-500/40 bg-amber-950/40 p-4 text-xs text-amber-100"
+          className="rounded-xl border border-amber-500/40 bg-amber-950/40 p-4 text-xs text-amber-100 space-y-1.5"
         >
-          Output agent bukan objek terstruktur yang valid. Lihat JSON mentah di bawah.
+          <p className="font-semibold">
+            Output tidak sesuai skema terbaru atau memiliki struktur yang belum lengkap.
+          </p>
+          <p className="text-amber-200/80">
+            Periksa data mentah melalui panel &ldquo;Lihat JSON Mentah&rdquo; di bawah atau jalankan ulang langkah ini.
+          </p>
+          {issueSummary && (
+            <p className="font-mono text-[11px] text-amber-200/75 break-words">{issueSummary}</p>
+          )}
         </div>
       );
     }
+
+    const out = parsed.data;
 
     switch (result.agentId) {
       case 'researcher':
