@@ -2,8 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const ROOT_DIR = path.resolve(import.meta.dirname, '..');
+const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SRC_DIR = path.join(ROOT_DIR, 'src');
 
 const IMPORT_SPECIFIER_PATTERNS: RegExp[] = [
