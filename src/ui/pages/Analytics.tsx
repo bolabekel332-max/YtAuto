@@ -25,6 +25,15 @@ export const Analytics: React.FC = () => {
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [truncateWarn, setTruncateWarn] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const prevProfilePlatformRef = useRef<Platform>(state.profile.platform ?? 'youtube_shorts');
+
+  useEffect(() => {
+    const nextPlatform = state.profile.platform ?? 'youtube_shorts';
+    if (prevProfilePlatformRef.current !== nextPlatform) {
+      prevProfilePlatformRef.current = nextPlatform;
+      setTargetPlatform(nextPlatform);
+    }
+  }, [state.profile.platform]);
 
   useEffect(() => {
     return () => {

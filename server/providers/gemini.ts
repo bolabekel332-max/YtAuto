@@ -14,8 +14,12 @@ import {
 
 let cachedGeminiApiKey = '';
 let cachedGeminiClient: GoogleGenAI | null = null;
+let testGeminiClientOverride: GoogleGenAI | null = null;
 
 export function getGeminiClient(apiKey = getEnv().geminiApiKey): GoogleGenAI {
+  if (testGeminiClientOverride) {
+    return testGeminiClientOverride;
+  }
   if (cachedGeminiClient && cachedGeminiApiKey === apiKey) {
     return cachedGeminiClient;
   }
@@ -31,9 +35,14 @@ export function getGeminiClient(apiKey = getEnv().geminiApiKey): GoogleGenAI {
   return cachedGeminiClient;
 }
 
+export function setGeminiClientForTests(client: GoogleGenAI | null): void {
+  testGeminiClientOverride = client;
+}
+
 export function resetGeminiClientCacheForTests(): void {
   cachedGeminiApiKey = '';
   cachedGeminiClient = null;
+  testGeminiClientOverride = null;
 }
 
 export interface GeminiSafetyResponseShape {
@@ -628,6 +637,27 @@ function supportsLowThinkingConfig(model: string): boolean {
   return isGemini4 || isGemini3Text;
 }
 
+function sleepWithAbort(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    const err = new Error('This operation was aborted');
+    err.name = 'AbortError';
+    return Promise.reject(err);
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      const err = new Error('This operation was aborted');
+      err.name = 'AbortError';
+      reject(err);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 export const geminiProvider: LLMProvider = {
   id: 'gemini',
   name: 'Google Gemini',
@@ -772,7 +802,7 @@ export const geminiProvider: LLMProvider = {
     const start = Date.now();
     const ai = getGeminiClient();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20_000);
+    const timer = setTimeout(() => controller.abort(), 25_000);
 
     const isGemini4 = model.startsWith('gemini-4-') || model.startsWith('models/gemini-4-');
     const isGemini3Text =
@@ -793,34 +823,55 @@ export const geminiProvider: LLMProvider = {
       };
     }
 
+    const maxAttempts = 3;
+    const fallbackDelaysMs = [400, 1000];
+    let lastError: ProviderCallError | null = null;
+
     try {
-      const response = await ai.models.generateContent({
-        model,
-        contents: 'Balas dengan satu kata: OK',
-        config: testConfig,
-      });
-      const latencyMs = Date.now() - start;
-      const reply = (response.text ?? '').trim();
-      const finishReason = response.candidates?.[0]?.finishReason;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+          const response = await ai.models.generateContent({
+            model,
+            contents: 'Balas dengan satu kata: OK',
+            config: testConfig,
+          });
+          const latencyMs = Date.now() - start;
+          const reply = (response.text ?? '').trim();
+          const finishReason = response.candidates?.[0]?.finishReason;
 
-      if (!reply && finishReason === 'MAX_TOKENS') {
-        throw new ProviderCallError(
-          'output_truncated',
-          502,
-          `Koneksi Gemini (${model}) tercapai namun respons tes terpotong sebelum menghasilkan teks.`,
-          false
-        );
-      }
+          if (!reply && finishReason === 'MAX_TOKENS') {
+            throw new ProviderCallError(
+              'output_truncated',
+              502,
+              `Koneksi Gemini (${model}) tercapai namun respons tes terpotong sebelum menghasilkan teks.`,
+              false
+            );
+          }
 
-      return {
-        latencyMs,
-        message: `Koneksi Gemini (${model}) berhasil${reply ? ` — respons: "${reply.slice(0, 30)}"` : ''}.`,
-      };
-    } catch (err) {
-      if (err instanceof ProviderCallError) {
-        throw err;
+          return {
+            latencyMs,
+            message: `Koneksi Gemini (${model}) berhasil${reply ? ` — respons: "${reply.slice(0, 30)}"` : ''}.`,
+          };
+        } catch (err) {
+          const mapped = err instanceof ProviderCallError ? err : mapGeminiError(err, false);
+          lastError = mapped;
+          if (attempt >= maxAttempts || !mapped.retryable || controller.signal.aborted) {
+            throw mapped;
+          }
+          const retryAfter = mapped.meta?.retryAfterMs;
+          const waitMs =
+            typeof retryAfter === 'number' && Number.isFinite(retryAfter)
+              ? Math.min(3_000, Math.max(200, retryAfter))
+              : (fallbackDelaysMs[attempt - 1] ?? 1000);
+          await sleepWithAbort(waitMs, controller.signal).catch((abortErr) => {
+            throw mapGeminiError(abortErr, false);
+          });
+        }
       }
-      throw mapGeminiError(err, false);
+      throw (
+        lastError ??
+        new ProviderCallError('provider_error', 502, 'Tes koneksi Gemini gagal.', false)
+      );
     } finally {
       clearTimeout(timer);
     }

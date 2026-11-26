@@ -29,9 +29,11 @@ import { extractSafeErrorLogMeta, logCall } from './logger';
 import { buildSystemPrompt, wrapAsData } from './promptBuilder';
 import {
   assertGeminiResponseNotBlocked,
+  geminiProvider,
   getGeminiClient,
   mapGeminiError,
   resetGeminiClientCacheForTests,
+  setGeminiClientForTests,
 } from './providers/gemini';
 import { FIXTURES } from './providers/mockFixtures';
 import { callNousChat, nousProvider } from './providers/nous';
@@ -1532,6 +1534,158 @@ test('callApinexChat menjalankan Web Search terverifikasi dan menangani HTTP 402
   }
 });
 
+test('handleRouteError tidak mencatat ProviderCallError/DailyCapError ke console.error api_route tetapi tetap mengembalikan status HTTP JSON', () => {
+  const errLogs: string[] = [];
+  const origError = console.error;
+  console.error = (msg?: unknown) => {
+    errLogs.push(String(msg ?? ''));
+  };
 
+  try {
+    const outProvider = mockRes();
+    handleRouteError(
+      outProvider.res,
+      new ProviderCallError(
+        'provider_error',
+        502,
+        'Layanan Gemini sedang tidak tersedia sementara (503).',
+        true,
+        { errorKind: 'upstream_unavailable', upstreamStatus: 503, upstreamStatusText: 'UNAVAILABLE' }
+      )
+    );
+    assert.equal(outProvider.getStatus(), 502);
+    assert.equal(
+      (outProvider.getBody() as { error?: { code?: string } }).error?.code,
+      'provider_error'
+    );
 
+    const outCap = mockRes();
+    handleRouteError(outCap.res, new DailyCapError('Batas panggilan harian tercapai.'));
+    assert.equal(outCap.getStatus(), 429);
+    assert.equal((outCap.getBody() as { error?: { code?: string } }).error?.code, 'daily_cap');
+
+    assert.equal(errLogs.length, 0);
+  } finally {
+    console.error = origError;
+  }
+});
+
+test('geminiProvider.testConnection me-retry error 503 sementara namun langsung berhenti pada error 401 non-retryable', async () => {
+  const prevGeminiKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'AIzaSyTestStubKeyOnlyForUnitTest';
+
+  try {
+    // Kasus A: 503 UNAVAILABLE dua kali lalu berhasil pada percobaan ke-3
+    let retryCalls = 0;
+    setGeminiClientForTests({
+      models: {
+        generateContent: async () => {
+          retryCalls += 1;
+          if (retryCalls < 3) {
+            throw Object.assign(
+              new Error(
+                '{"error":{"code":503,"message":"The service is currently unavailable.","status":"UNAVAILABLE"}}'
+              ),
+              { status: 503 }
+            );
+          }
+          return {
+            text: 'OK',
+            candidates: [{ finishReason: 'STOP' }],
+          };
+        },
+      },
+    } as unknown as ReturnType<typeof getGeminiClient>);
+
+    const okRes = await geminiProvider.testConnection('gemini-4-hydrogen');
+    assert.equal(retryCalls, 3);
+    assert.match(okRes.message, /berhasil/i);
+    assert.match(okRes.message, /OK/);
+
+    // Kasus B (kontrol negatif): 401 tidak boleh di-retry
+    let authCalls = 0;
+    setGeminiClientForTests({
+      models: {
+        generateContent: async () => {
+          authCalls += 1;
+          throw Object.assign(new Error('API key not valid'), { status: 401 });
+        },
+      },
+    } as unknown as ReturnType<typeof getGeminiClient>);
+
+    await assert.rejects(
+      () => geminiProvider.testConnection('gemini-4-hydrogen'),
+      (err: unknown) => {
+        assert.ok(err instanceof ProviderCallError);
+        assert.equal(err.meta?.errorKind, 'authentication_error');
+        assert.equal(err.retryable, false);
+        return true;
+      }
+    );
+    assert.equal(authCalls, 1);
+
+    // Kasus C: 503 terus-menerus gagal bersih setelah 3 percobaan
+    let exhaustedCalls = 0;
+    setGeminiClientForTests({
+      models: {
+        generateContent: async () => {
+          exhaustedCalls += 1;
+          throw Object.assign(
+            new Error(
+              '{"error":{"code":503,"message":"The service is currently unavailable.","status":"UNAVAILABLE"}}'
+            ),
+            { status: 503 }
+          );
+        },
+      },
+    } as unknown as ReturnType<typeof getGeminiClient>);
+
+    await assert.rejects(
+      () => geminiProvider.testConnection('gemini-4-hydrogen'),
+      (err: unknown) => {
+        assert.ok(err instanceof ProviderCallError);
+        assert.equal(err.meta?.errorKind, 'upstream_unavailable');
+        assert.equal(err.httpStatus, 502);
+        return true;
+      }
+    );
+    assert.equal(exhaustedCalls, 3);
+  } finally {
+    resetGeminiClientCacheForTests();
+    if (prevGeminiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = prevGeminiKey;
+  }
+});
+
+test('buildSystemPrompt meneruskan customPlatformNote ke CHANNEL_PROFILE dan mengabaikannya jika kosong', () => {
+  const cfg = DEFAULT_MODEL_CONFIGS.find((c) => c.agentId === 'scriptwriter')!;
+  const withNote = buildSystemPrompt({
+    agentId: 'scriptwriter',
+    schemaId: 'scriptwriter',
+    profile: {
+      ...SAMPLE_PROFILE_FOR_TEST,
+      platform: 'tiktok',
+      customPlatformNote: 'Area bawah 20% bebas teks untuk UI TikTok',
+    },
+    blocks: [],
+    config: cfg,
+    nonce: 'note1234',
+  });
+  assert.ok(withNote.includes('customPlatformNote'));
+  assert.ok(withNote.includes('Area bawah 20% bebas teks untuk UI TikTok'));
+
+  const withoutNote = buildSystemPrompt({
+    agentId: 'scriptwriter',
+    schemaId: 'scriptwriter',
+    profile: {
+      ...SAMPLE_PROFILE_FOR_TEST,
+      platform: 'youtube_shorts',
+      customPlatformNote: '   ',
+    },
+    blocks: [],
+    config: cfg,
+    nonce: 'note5678',
+  });
+  assert.equal(withoutNote.includes('customPlatformNote'), false);
+});
 

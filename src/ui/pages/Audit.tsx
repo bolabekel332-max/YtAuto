@@ -75,6 +75,23 @@ export const Audit: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const prevProfilePlatformRef = useRef<Platform>(state.profile.platform ?? 'youtube_shorts');
+  const prevDefaultStyleIdRef = useRef<string>(defaultStyleId);
+
+  useEffect(() => {
+    const nextPlatform = state.profile.platform ?? 'youtube_shorts';
+    if (prevProfilePlatformRef.current !== nextPlatform) {
+      prevProfilePlatformRef.current = nextPlatform;
+      setManualPlatform(nextPlatform);
+    }
+  }, [state.profile.platform]);
+
+  useEffect(() => {
+    if (prevDefaultStyleIdRef.current !== defaultStyleId) {
+      prevDefaultStyleIdRef.current = defaultStyleId;
+      setStyleProfileId(defaultStyleId);
+    }
+  }, [defaultStyleId]);
 
   useEffect(() => {
     if (styleProfileId && effectiveStyleProfileId !== styleProfileId) {

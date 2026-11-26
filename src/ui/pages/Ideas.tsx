@@ -5,6 +5,7 @@ import { runAgent } from '../../api/client';
 import { label } from '../../config/labels';
 import { PROFILE_OPTIONS } from '../../config/presets';
 import { useStore } from '../../state/store';
+import { ActiveChannelSummary } from '../components/ActiveChannelSummary';
 import { Card } from '../components/Card';
 import { SelectField } from '../components/FormFields';
 import { Tooltip } from '../components/Tooltip';
@@ -21,6 +22,15 @@ export const Ideas: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const prevProfilePlatformRef = useRef<Platform>(state.profile.platform ?? 'youtube_shorts');
+
+  useEffect(() => {
+    const nextDefault = state.profile.platform ?? 'youtube_shorts';
+    if (prevProfilePlatformRef.current !== nextDefault) {
+      prevProfilePlatformRef.current = nextDefault;
+      setTargetPlatform(nextDefault);
+    }
+  }, [state.profile.platform]);
 
   useEffect(() => {
     return () => {
@@ -109,7 +119,9 @@ export const Ideas: React.FC = () => {
         description="Jalankan agent Periset secara mandiri untuk memetakan celah niche, membuat seri berulang, ide berperingkat, dan jadwal tayang."
         tooltip="Anda bisa langsung menekan tombol 'Jadikan Video' pada salah satu ide hasil riset untuk mengirimkannya ke Studio Video."
       >
-        <form onSubmit={handleRunResearch} className="space-y-4">
+        <div className="space-y-4">
+          <ActiveChannelSummary currentPlatformOverride={targetPlatform} />
+          <form onSubmit={handleRunResearch} className="space-y-4">
           <div className="grid gap-4 md:grid-cols-2">
             <SelectField
               label="Platform Target Riset"
@@ -212,6 +224,7 @@ export const Ideas: React.FC = () => {
             </div>
           </div>
         </form>
+        </div>
       </Card>
 
       {state.lastIdeas ? (

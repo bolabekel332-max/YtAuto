@@ -24,8 +24,11 @@ import { AppShell } from './components/AppShell';
 import { ChipGroup, SelectField } from './components/FormFields';
 import { Header } from './components/Header';
 import { StyleReferenceAnalyzerForm } from './components/StyleReferenceAnalyzerForm';
+import { Ideas } from './pages/Ideas';
 import { Knowledge } from './pages/Knowledge';
 import { ModelSettings } from './pages/ModelSettings';
+import { SetupChannel } from './pages/SetupChannel';
+import { VideoStudio } from './pages/VideoStudio';
 import { AgentOutput } from './renderers/AgentOutput';
 import { StyleProfileView } from './renderers/StyleProfileView';
 
@@ -809,3 +812,90 @@ test('R3-18e & N3-02: Header menonaktifkan Impor JSON dan Hapus Data saat pipeli
     harness.cleanup();
   }
 });
+
+test('SetupChannel menampilkan peringatan perubahan belum disimpan dan Ideas serta VideoStudio menyinkronkan profil aktif', () => {
+  const ProfileSyncHost: React.FC = () => {
+    const { dispatch } = useStore();
+    return React.createElement(
+      'div',
+      null,
+      React.createElement(
+        'button',
+        {
+          type: 'button',
+          onClick: () =>
+            dispatch({
+              type: 'SET_PROFILE',
+              profile: {
+                ...SAMPLE_PROFILE_FOR_TEST,
+                niche: 'Teknologi dan AI',
+                platform: 'tiktok',
+                customPlatformNote: 'Area bawah bebas teks TikTok',
+                visualStyle: {
+                  mode: 'template',
+                  template: 'Ilustrasi',
+                },
+              },
+            }),
+        },
+        'Terapkan Profil TikTok'
+      ),
+      React.createElement(Ideas),
+      React.createElement(VideoStudio)
+    );
+  };
+
+  const syncHarness = renderInDom(
+    React.createElement(
+      StoreProvider,
+      null,
+      React.createElement(PipelineProvider, null, React.createElement(ProfileSyncHost))
+    )
+  );
+  try {
+    const ideasSelectBefore = syncHarness.rootEl.querySelectorAll('select')[0] as HTMLSelectElement;
+    assert.equal(ideasSelectBefore.value, 'youtube_shorts');
+
+    act(() => {
+      findButton(syncHarness.rootEl, 'Terapkan Profil TikTok').click();
+    });
+
+    const textAfter = syncHarness.rootEl.textContent ?? '';
+    assert.ok(textAfter.includes('Konteks Channel Aktif dari Setup Channel'));
+    assert.ok(textAfter.includes('Teknologi dan AI'));
+    assert.ok(textAfter.includes('Area bawah bebas teks TikTok'));
+    assert.ok(textAfter.includes('Bawaan Setup (Template: Ilustrasi)'));
+
+    const selects = Array.from(syncHarness.rootEl.querySelectorAll('select')) as HTMLSelectElement[];
+    const tikTokSelectedCount = selects.filter((s) => s.value === 'tiktok').length;
+    assert.equal(tikTokSelectedCount, 2, 'Ideas dan VideoStudio harus otomatis sinkron ke tiktok');
+  } finally {
+    syncHarness.cleanup();
+  }
+
+  // SetupChannel: perubahan form menampilkan status belum disimpan hingga Simpan ditekan
+  const setupHarness = renderInDom(
+    React.createElement(StoreProvider, null, React.createElement(SetupChannel))
+  );
+  try {
+    assert.equal(
+      (setupHarness.rootEl.textContent ?? '').includes('Ada perubahan konfigurasi yang belum disimpan'),
+      false
+    );
+    act(() => {
+      findButton(setupHarness.rootEl, 'TikTok').click();
+    });
+    assert.ok(
+      (setupHarness.rootEl.textContent ?? '').includes('Ada perubahan konfigurasi yang belum disimpan')
+    );
+    assert.ok(findButton(setupHarness.rootEl, 'Simpan Perubahan Setup Channel'));
+
+    act(() => {
+      findButton(setupHarness.rootEl, 'Simpan Perubahan Setup Channel').click();
+    });
+    assert.ok((setupHarness.rootEl.textContent ?? '').includes('Profil channel berhasil disimpan'));
+  } finally {
+    setupHarness.cleanup();
+  }
+});
+

@@ -174,6 +174,9 @@ export function buildSystemPrompt(params: {
     language: resolveChannelField(params.profile.language, params.profile.customLanguage),
     tone: resolveChannelField(params.profile.tone, params.profile.customTone),
     platform: params.profile.platform,
+    ...(params.profile.customPlatformNote?.trim()
+      ? { customPlatformNote: params.profile.customPlatformNote.trim() }
+      : {}),
     postingFrequency: resolveChannelField(
       params.profile.postingFrequency,
       params.profile.customPostingFrequency

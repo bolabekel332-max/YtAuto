@@ -49,7 +49,11 @@ function bindRequestAbort(req: Request, res: Response): AbortController {
 }
 
 export function handleRouteError(res: Response, err: unknown): void {
-  if (!(err instanceof AppApiError)) {
+  if (
+    !(err instanceof AppApiError) &&
+    !(err instanceof ProviderCallError) &&
+    !(err instanceof DailyCapError)
+  ) {
     const safeMsg = sanitizeErrorMessage(err);
     const errName = err instanceof Error ? err.name : typeof err;
     console.error(

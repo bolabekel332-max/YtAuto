@@ -58,6 +58,7 @@ export const SetupChannel: React.FC = () => {
 
   const isPresetSensitive = isDefaultSensitiveNiche(form.niche);
   const effectiveSensitive = isPresetSensitive || form.sensitiveNiche;
+  const hasUnsavedChanges = JSON.stringify(form) !== JSON.stringify(state.profile);
 
   const validSelectedProfileId =
     form.visualStyle.defaultStyleProfileId &&
@@ -706,6 +707,17 @@ export const SetupChannel: React.FC = () => {
         </div>
       )}
 
+      {hasUnsavedChanges && !savedNotice && (
+        <div
+          role="status"
+          className="rounded-xl border border-amber-500/40 bg-amber-950/40 px-4 py-3 text-xs text-amber-100"
+        >
+          Ada perubahan konfigurasi yang belum disimpan. Klik{' '}
+          <strong>Simpan Setup Channel</strong> sebelum berpindah ke Ide &amp; Kalender atau
+          Studio Video agar konteks terbaru aktif.
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center justify-end gap-3">
         <Tooltip
           text="Menyimpan konfigurasi channel ke penyimpanan lokal browser dan menandai profil aktif siap digunakan seluruh agent."
@@ -716,7 +728,7 @@ export const SetupChannel: React.FC = () => {
           className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-5 py-2.5 text-sm font-semibold text-slate-950 hover:bg-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 transition-colors"
         >
           <Save className="h-4 w-4" aria-hidden="true" />
-          <span>Simpan Setup Channel</span>
+          <span>{hasUnsavedChanges ? 'Simpan Perubahan Setup Channel' : 'Simpan Setup Channel'}</span>
         </button>
       </div>
     </form>

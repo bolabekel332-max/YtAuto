@@ -12,6 +12,10 @@ import { label } from '../../config/labels';
 import { PROFILE_OPTIONS } from '../../config/presets';
 import { usePipeline } from '../../state/pipelineContext';
 import { useStore } from '../../state/store';
+import {
+  ActiveChannelSummary,
+  resolveVisualStyleSummaryLabel,
+} from '../components/ActiveChannelSummary';
 import { Card } from '../components/Card';
 import { SelectField } from '../components/FormFields';
 import { HistoryPanel } from '../components/HistoryPanel';
@@ -59,6 +63,30 @@ export const VideoStudio: React.FC = () => {
 
   const [selectedStep, setSelectedStep] = useState<PipelineStepId>('scriptwriter');
   const [formError, setFormError] = useState<string | null>(null);
+  const prevProfilePlatformRef = React.useRef<Platform>(
+    state.profile.platform ?? 'youtube_shorts'
+  );
+  const prevDefaultStyleIdRef = React.useRef<string>(defaultStyleId);
+
+  // Sinkronkan default Platform & Gaya Visual bila Profil Setup Channel diperbarui dari luar
+  useEffect(() => {
+    const nextPlatform = state.profile.platform ?? 'youtube_shorts';
+    if (prevProfilePlatformRef.current !== nextPlatform) {
+      prevProfilePlatformRef.current = nextPlatform;
+      if (!state.draftRunInput) {
+        setTargetPlatform(nextPlatform);
+      }
+    }
+  }, [state.profile.platform, state.draftRunInput]);
+
+  useEffect(() => {
+    if (prevDefaultStyleIdRef.current !== defaultStyleId) {
+      prevDefaultStyleIdRef.current = defaultStyleId;
+      if (!state.draftRunInput) {
+        setStyleProfileId(defaultStyleId);
+      }
+    }
+  }, [defaultStyleId, state.draftRunInput]);
 
   // Sinkronkan draft input jika datang dari halaman Ide atau tombol Duplikasi
   useEffect(() => {
@@ -184,51 +212,59 @@ export const VideoStudio: React.FC = () => {
           description="Menjalankan urutan deterministik: Penulis Naskah → Pengarah Visual → Packaging & SEO → Kepatuhan (maks 2 putaran revisi) → Orkestrator."
           tooltip="Anda dapat memilih menyertakan agent Periset di awal atau langsung mulai dari topik matang."
         >
-          <form onSubmit={handleStartPipeline} className="space-y-4">
-            <div>
-              <div className="flex items-center gap-1.5 mb-1.5">
-                <label htmlFor="studio-topic" className="text-xs font-medium text-slate-200">
-                  Topik / Ide Video
-                </label>
-                <Tooltip
-                  text="Jelaskan ide utama atau judul sementara video yang ingin diproduksi menjadi paket lengkap."
-                  label="Panduan Topik Video"
+          <div className="space-y-4">
+            <ActiveChannelSummary currentPlatformOverride={targetPlatform} />
+            <form onSubmit={handleStartPipeline} className="space-y-4">
+              <div>
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <label htmlFor="studio-topic" className="text-xs font-medium text-slate-200">
+                    Topik / Ide Video
+                  </label>
+                  <Tooltip
+                    text="Jelaskan ide utama atau judul sementara video yang ingin diproduksi menjadi paket lengkap."
+                    label="Panduan Topik Video"
+                  />
+                </div>
+                <textarea
+                  id="studio-topic"
+                  rows={2}
+                  value={topic}
+                  onChange={(e) => setTopic(e.target.value)}
+                  disabled={isBusy}
+                  placeholder="Contoh: Mengapa jam atom jauh lebih akurat daripada rotasi Bumi"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-sky-500 focus-visible:outline-none"
                 />
               </div>
-              <textarea
-                id="studio-topic"
-                rows={2}
-                value={topic}
-                onChange={(e) => setTopic(e.target.value)}
-                disabled={isBusy}
-                placeholder="Contoh: Mengapa jam atom jauh lebih akurat daripada rotasi Bumi"
-                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-sky-500 focus-visible:outline-none"
-              />
-            </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <SelectField
-                label="Platform Tujuan (Pilih Tepat 1)"
-                value={targetPlatform}
-                options={PROFILE_OPTIONS.platforms}
-                onChange={(v) => setTargetPlatform(v as Platform)}
-                tooltip="Setiap run hanya menargetkan satu platform agar struktur durasi, hook, dan caption optimal."
-              />
+              <div className="grid gap-4 sm:grid-cols-2">
+                <SelectField
+                  label="Platform Tujuan (Pilih Tepat 1)"
+                  value={targetPlatform}
+                  options={PROFILE_OPTIONS.platforms}
+                  onChange={(v) => setTargetPlatform(v as Platform)}
+                  tooltip="Setiap run hanya menargetkan satu platform agar struktur durasi, hook, dan caption optimal."
+                />
 
-              <SelectField
-                label="Profil Gaya Visual (Opsional)"
-                value={effectiveStyleProfileId}
-                options={[
-                  { value: '', label: 'Gunakan Template Setup Channel' },
-                  ...state.styleProfiles.map((sp) => ({
-                    value: sp.id,
-                    label: sp.name,
-                  })),
-                ]}
-                onChange={setStyleProfileId}
-                tooltip="Menyuntikkan ciri ritme, warna, dan tata letak abstrak dari Referensi Gaya ke Penulis Naskah, Visual, Packaging, dan Kepatuhan."
-              />
-            </div>
+                <SelectField
+                  label="Profil Gaya Visual (Opsional)"
+                  value={effectiveStyleProfileId}
+                  options={[
+                    {
+                      value: '',
+                      label: `Bawaan Setup (${resolveVisualStyleSummaryLabel(
+                        state.profile,
+                        state.styleProfiles
+                      )})`,
+                    },
+                    ...state.styleProfiles.map((sp) => ({
+                      value: sp.id,
+                      label: sp.name,
+                    })),
+                  ]}
+                  onChange={setStyleProfileId}
+                  tooltip="Menyuntikkan ciri ritme, warna, dan tata letak abstrak dari Referensi Gaya ke Penulis Naskah, Visual, Packaging, dan Kepatuhan."
+                />
+              </div>
 
             <label className="flex items-start gap-2.5 rounded-xl border border-slate-800 bg-slate-950/70 p-3 text-xs text-slate-200">
               <input
@@ -305,6 +341,7 @@ export const VideoStudio: React.FC = () => {
               </button>
             </div>
           </form>
+          </div>
         </Card>
 
         {/* Progres Pipeline & Langkah */}
