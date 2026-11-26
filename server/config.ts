@@ -4,7 +4,7 @@ import {
   PROVIDER_IDS,
 } from '../shared/constants';
 import type { ProviderId } from '../shared/schemas';
-import { DEFAULT_MODEL_CONFIGS, defaultModelForProvider } from '../src/state/defaults';
+import { DEFAULT_MODEL_CONFIGS, defaultModelForProvider } from '../shared/defaults';
 
 export interface ServerEnv {
   host: string;
