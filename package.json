@@ -14,7 +14,7 @@
     "clean": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('server.js',{force:true});\"",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test server/serverCore.test.ts server/r3Security.test.ts shared/agentSchemas.test.ts src/agents/dependencies.test.ts src/agents/pipeline.test.ts src/config/modelAutoConfig.test.ts src/knowledge/transparency.test.ts src/style/localMetrics.test.ts src/style/mergeProfiles.test.ts src/state/persistence.test.ts src/state/store.test.ts src/ui/r3Ui.test.tsx"
+    "test": "tsx --test server/serverCore.test.ts server/r3Security.test.ts server/n3Putaran4.test.ts shared/agentSchemas.test.ts src/agents/dependencies.test.ts src/agents/pipeline.test.ts src/config/modelAutoConfig.test.ts src/knowledge/transparency.test.ts src/style/localMetrics.test.ts src/style/mergeProfiles.test.ts src/state/persistence.test.ts src/state/store.test.ts src/state/n3Recovery.test.ts src/ui/r3Ui.test.tsx"
   },
   "dependencies": {
     "@google/genai": "^3.6.1",
@@ -33,6 +33,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
+    "jsdom": "^31.0.1",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "vite": "^8.3.0"

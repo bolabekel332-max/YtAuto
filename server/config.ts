@@ -1,5 +1,10 @@
-import { DEFAULT_GEMINI_MODEL, MAX_TOKENS_LIMIT, PROVIDER_IDS } from '../shared/constants';
+import {
+  AUTO_FREE_FALLBACK_MODELS,
+  MAX_TOKENS_LIMIT,
+  PROVIDER_IDS,
+} from '../shared/constants';
 import type { ProviderId } from '../shared/schemas';
+import { DEFAULT_MODEL_CONFIGS, defaultModelForProvider } from '../src/state/defaults';
 
 export interface ServerEnv {
   host: string;
@@ -21,6 +26,9 @@ export interface ServerEnv {
   isProd: boolean;
   trustProxy: boolean | number;
   geminiModelAllowlist: string[];
+  openrouterModelAllowlist: string[];
+  nousModelAllowlist: string[];
+  apinexModelAllowlist: string[];
   autoFreeFallback: boolean;
 }
 
@@ -40,14 +48,74 @@ export function isLoopbackHost(host: string): boolean {
   return normalized === '127.0.0.1' || normalized === 'localhost' || normalized === '::1';
 }
 
-export function getEffectiveGeminiModelAllowlist(
-  env: Pick<ServerEnv, 'host' | 'geminiModelAllowlist'> = getEnv()
+function parseCsvEnv(raw: string | undefined): string[] {
+  return (raw ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function getExplicitAllowlistForProvider(
+  providerId: ProviderId,
+  env: Pick<
+    ServerEnv,
+    'geminiModelAllowlist' | 'openrouterModelAllowlist' | 'nousModelAllowlist' | 'apinexModelAllowlist'
+  >
 ): string[] {
-  if (env.geminiModelAllowlist.length > 0) {
-    return env.geminiModelAllowlist;
+  switch (providerId) {
+    case 'gemini':
+      return env.geminiModelAllowlist;
+    case 'openrouter':
+      return env.openrouterModelAllowlist;
+    case 'nous':
+      return env.nousModelAllowlist;
+    case 'apinex':
+      return env.apinexModelAllowlist;
+    default:
+      return [];
+  }
+}
+
+function getImplicitModelsForProvider(providerId: ProviderId): string[] {
+  const models = new Set<string>();
+  for (const cfg of DEFAULT_MODEL_CONFIGS) {
+    if (cfg.providerId !== providerId) continue;
+    if (cfg.model.trim()) models.add(cfg.model.trim());
+    for (const fb of cfg.fallbackModels) {
+      if (fb.trim()) models.add(fb.trim());
+    }
+  }
+  const fallbackDefault = defaultModelForProvider(providerId);
+  if (fallbackDefault) {
+    models.add(fallbackDefault);
+  }
+  const autoFree = (AUTO_FREE_FALLBACK_MODELS as Record<string, string>)[providerId];
+  if (autoFree) {
+    models.add(autoFree);
+  }
+  return Array.from(models);
+}
+
+export function getEffectiveModelAllowlist(
+  providerId: ProviderId,
+  env: Pick<
+    ServerEnv,
+    | 'host'
+    | 'geminiModelAllowlist'
+    | 'openrouterModelAllowlist'
+    | 'nousModelAllowlist'
+    | 'apinexModelAllowlist'
+  > = getEnv()
+): string[] {
+  if (providerId === 'mock') {
+    return [];
+  }
+  const explicit = getExplicitAllowlistForProvider(providerId, env);
+  if (explicit.length > 0) {
+    return explicit;
   }
   if (!isLoopbackHost(env.host)) {
-    return [DEFAULT_GEMINI_MODEL];
+    return getImplicitModelsForProvider(providerId);
   }
   return [];
 }
@@ -82,11 +150,10 @@ export function isProdMode(
 
 export function getEnv(): ServerEnv {
   const nodeEnv = (process.env.NODE_ENV ?? 'development').trim() || 'development';
-  const allowlistRaw = process.env.GEMINI_MODEL_ALLOWLIST ?? '';
-  const geminiModelAllowlist = allowlistRaw
-    .split(',')
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0);
+  const geminiModelAllowlist = parseCsvEnv(process.env.GEMINI_MODEL_ALLOWLIST);
+  const openrouterModelAllowlist = parseCsvEnv(process.env.OPENROUTER_MODEL_ALLOWLIST);
+  const nousModelAllowlist = parseCsvEnv(process.env.NOUS_MODEL_ALLOWLIST);
+  const apinexModelAllowlist = parseCsvEnv(process.env.APINEX_MODEL_ALLOWLIST);
   const rawMaxTokensCap = parsePositiveInt(
     process.env.SERVER_MAX_TOKENS_CAP,
     MAX_TOKENS_LIMIT
@@ -112,6 +179,9 @@ export function getEnv(): ServerEnv {
     isProd: isProdMode(nodeEnv, process.argv),
     trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
     geminiModelAllowlist,
+    openrouterModelAllowlist,
+    nousModelAllowlist,
+    apinexModelAllowlist,
     autoFreeFallback: (process.env.AUTO_FREE_FALLBACK ?? '').trim().toLowerCase() !== 'false',
   };
 }

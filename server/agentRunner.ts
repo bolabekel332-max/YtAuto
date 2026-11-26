@@ -67,6 +67,7 @@ function resolveEffectiveJsonMode(desired: JsonMode, provider: LLMProvider): Jso
 export interface RunAgentOptions {
   media?: LLMMediaItem[];
   signal?: AbortSignal;
+  providerOverride?: LLMProvider;
 }
 
 export async function runAgent(
@@ -74,7 +75,7 @@ export async function runAgent(
   options: RunAgentOptions = {}
 ): Promise<AgentResult> {
   const start = Date.now();
-  const provider = getProvider(req.config.providerId);
+  const provider = options.providerOverride ?? getProvider(req.config.providerId);
   const media = options.media;
 
   let validatedConfig;
@@ -183,6 +184,15 @@ export async function runAgent(
     lastTokens = firstPass.response.tokens;
     recordModelTokens(firstPass.totalTokens || firstPass.response.tokens);
     let sources = firstPass.response.sources;
+    const firstPassSearchNotes = firstPass.response.searchNotes?.trim().slice(0, 20_000) || undefined;
+    const rawFirstPassOutput =
+      typeof firstPass.response.text === 'string'
+        ? firstPass.response.text
+        : firstPass.response.json !== undefined
+        ? JSON.stringify(firstPass.response.json)
+        : '';
+    const previousOutputTruncated = rawFirstPassOutput.slice(0, 20_000);
+    let repairedWithoutGrounding = false;
 
     let validation = validateOutput(schemaId, firstPass.response);
 
@@ -194,20 +204,46 @@ export async function runAgent(
         throw abortErr;
       }
 
+      if (shouldUseSearch && !firstPassSearchNotes) {
+        repairedWithoutGrounding = true;
+      }
+
+      const repairUserParts: string[] = [
+        'Respons sebelumnya belum memenuhi skema JSON yang wajib diikuti. Perbaiki agar valid 100% sesuai skema pada system prompt.',
+      ];
+
+      if (firstPassSearchNotes) {
+        const initialSources = sanitizeSources(sources);
+        const searchStatusSummary =
+          initialSources.length === 0
+            ? 'Pencarian web tahap 1 tidak mengembalikan tautan sumber grounding dari server.'
+            : `Pencarian web tahap 1 mengembalikan ${initialSources.length} sumber grounding dari server.`;
+        repairUserParts.push(
+          wrapAsData('WEB_SEARCH_STATUS', searchStatusSummary, promptNonce),
+          wrapAsData('WEB_SEARCH_NOTES', firstPassSearchNotes, promptNonce)
+        );
+      }
+
+      repairUserParts.push(
+        wrapAsData('VALIDATION_ERROR_DETAIL', validation.reason, promptNonce)
+      );
+
+      const repairMessages = [
+        ...baseRequest.messages,
+        ...(previousOutputTruncated
+          ? [{ role: 'assistant' as const, content: previousOutputTruncated }]
+          : []),
+        {
+          role: 'user' as const,
+          content: repairUserParts.join('\n\n'),
+        },
+      ];
+
       const repairRequest: LLMRequest = {
         ...baseRequest,
         useSearch: false,
         signal: options.signal,
-        messages: [
-          ...baseRequest.messages,
-          {
-            role: 'user',
-            content: [
-              'Respons sebelumnya belum memenuhi skema JSON yang wajib diikuti. Perbaiki agar valid 100% sesuai skema pada system prompt.',
-              wrapAsData('VALIDATION_ERROR_DETAIL', validation.reason, promptNonce),
-            ].join('\n\n'),
-          },
-        ],
+        messages: repairMessages,
       };
 
       const secondPass = await withRetryAndFallback(
@@ -221,7 +257,9 @@ export async function runAgent(
       modelUsed = secondPass.modelUsed;
       recordModelTokens(secondPass.response.tokens);
       lastTokens = (lastTokens ?? 0) + (secondPass.response.tokens ?? 0);
-      if (secondPass.response.sources && secondPass.response.sources.length > 0) {
+      if (repairedWithoutGrounding) {
+        sources = undefined;
+      } else if (secondPass.response.sources && secondPass.response.sources.length > 0) {
         sources = secondPass.response.sources;
       }
 
@@ -236,7 +274,7 @@ export async function runAgent(
     }
 
     const fallbackUsed = modelUsed !== validatedConfig.model;
-    const sanitizedSources = sanitizeSources(sources);
+    const sanitizedSources = repairedWithoutGrounding ? [] : sanitizeSources(sources);
     const groundedSources = sanitizedSources.length > 0 ? sanitizedSources : undefined;
     const latencyMs = Date.now() - start;
     logCall({
@@ -252,7 +290,8 @@ export async function runAgent(
       output: validation.data,
       sources: groundedSources,
       searchUsed: shouldUseSearch,
-      groundedSourceCount: groundedSources?.length ?? 0,
+      groundedSourceCount: repairedWithoutGrounding ? 0 : (groundedSources?.length ?? 0),
+      ...(repairedWithoutGrounding ? { repairedWithoutGrounding: true } : {}),
       fallbackUsed,
       ...(fallbackUsed ? { requestedModel: validatedConfig.model } : {}),
       model: modelUsed,

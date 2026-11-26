@@ -84,7 +84,151 @@ function extractEntryCounts(raw: string): Record<string, number> | undefined {
   }
 }
 
-function backupCorruptRawPayload(raw: string): BackupCorruptResult {
+function fitsMaxCorruptBytes(serialized: string): boolean {
+  return (
+    serialized.length <= MAX_CORRUPT_BACKUP_BYTES &&
+    byteLengthOf(serialized) <= MAX_CORRUPT_BACKUP_BYTES
+  );
+}
+
+function buildTruncatedPrefixBackup(raw: string, rawBytes: number): string {
+  const backedUpAt = new Date().toISOString();
+  let lo = 0;
+  let hi = Math.min(raw.length, MAX_CORRUPT_BACKUP_BYTES);
+  let best = JSON.stringify({
+    truncated: true,
+    originalBytes: rawBytes,
+    backedUpAt,
+    rawPrefix: '',
+  });
+
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const candidate = JSON.stringify({
+      truncated: true,
+      originalBytes: rawBytes,
+      backedUpAt,
+      rawPrefix: raw.slice(0, mid),
+    });
+    if (fitsMaxCorruptBytes(candidate)) {
+      best = candidate;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return best;
+}
+
+function buildPartialDroppedBackup(
+  rawBytes: number,
+  dropped: Record<string, unknown>
+): { payload: string; truncated: boolean } {
+  const backedUpAt = new Date().toISOString();
+  const fullEnvelope = JSON.stringify({
+    backedUpAt,
+    originalBytes: rawBytes,
+    dropped,
+  });
+  if (fitsMaxCorruptBytes(fullEnvelope)) {
+    return { payload: fullEnvelope, truncated: false };
+  }
+
+  type PackedUnit =
+    | { kind: 'history'; value: unknown; size: number }
+    | { kind: 'section'; key: string; value: unknown; size: number };
+
+  const units: PackedUnit[] = [];
+  for (const [key, value] of Object.entries(dropped)) {
+    if (key === 'history' && Array.isArray(value)) {
+      for (const item of value) {
+        let size = MAX_CORRUPT_BACKUP_BYTES + 1;
+        try {
+          size = byteLengthOf(JSON.stringify(item));
+        } catch {
+          // Biarkan ukuran di atas batas
+        }
+        units.push({ kind: 'history', value: item, size });
+      }
+    } else {
+      let size = MAX_CORRUPT_BACKUP_BYTES + 1;
+      try {
+        size = byteLengthOf(JSON.stringify(value));
+      } catch {
+        // Biarkan ukuran di atas batas
+      }
+      units.push({ kind: 'section', key, value, size });
+    }
+  }
+
+  units.sort((a, b) => a.size - b.size);
+
+  const keptDropped: Record<string, unknown> = {};
+  let omittedCount = 0;
+
+  for (const unit of units) {
+    if (unit.kind === 'history') {
+      const prevArr = Array.isArray(keptDropped.history)
+        ? (keptDropped.history as unknown[])
+        : [];
+      keptDropped.history = [...prevArr, unit.value];
+      const testJson = JSON.stringify({
+        truncated: true,
+        backedUpAt,
+        originalBytes: rawBytes,
+        omittedCount,
+        dropped: keptDropped,
+      });
+      if (!fitsMaxCorruptBytes(testJson)) {
+        if (prevArr.length > 0) keptDropped.history = prevArr;
+        else delete keptDropped.history;
+        omittedCount += 1;
+      }
+    } else {
+      keptDropped[unit.key] = unit.value;
+      const testJson = JSON.stringify({
+        truncated: true,
+        backedUpAt,
+        originalBytes: rawBytes,
+        omittedCount,
+        dropped: keptDropped,
+      });
+      if (!fitsMaxCorruptBytes(testJson)) {
+        delete keptDropped[unit.key];
+        omittedCount += 1;
+      }
+    }
+  }
+
+  if (omittedCount === 0) {
+    omittedCount = 1;
+  }
+
+  let finalJson = JSON.stringify({
+    truncated: true,
+    backedUpAt,
+    originalBytes: rawBytes,
+    omittedCount,
+    dropped: keptDropped,
+  });
+
+  if (!fitsMaxCorruptBytes(finalJson)) {
+    finalJson = JSON.stringify({
+      truncated: true,
+      backedUpAt,
+      originalBytes: rawBytes,
+      omittedCount: units.length,
+      dropped: {},
+    });
+  }
+
+  return { payload: finalJson, truncated: true };
+}
+
+function backupCorruptRawPayload(
+  raw: string,
+  droppedOnly?: Record<string, unknown>
+): BackupCorruptResult {
   try {
     if (typeof window === 'undefined' || !window.localStorage) {
       return { backedUp: false, truncated: false, overwrittenPrevious: false };
@@ -94,16 +238,13 @@ function backupCorruptRawPayload(raw: string): BackupCorruptResult {
     let toStore = raw;
     let truncated = false;
 
-    if (raw.length > MAX_CORRUPT_BACKUP_BYTES || rawBytes > MAX_CORRUPT_BACKUP_BYTES) {
+    if (droppedOnly && Object.keys(droppedOnly).length > 0) {
+      const partial = buildPartialDroppedBackup(rawBytes, droppedOnly);
+      toStore = partial.payload;
+      truncated = partial.truncated;
+    } else if (!fitsMaxCorruptBytes(raw)) {
       truncated = true;
-      const entryCounts = extractEntryCounts(raw);
-      toStore = JSON.stringify({
-        truncated: true,
-        originalBytes: rawBytes,
-        backedUpAt: new Date().toISOString(),
-        ...(entryCounts ? { entryCounts } : {}),
-        preview: raw.slice(0, 1024),
-      });
+      toStore = buildTruncatedPrefixBackup(raw, rawBytes);
     }
 
     window.localStorage.setItem(CORRUPT_BACKUP_KEY, toStore);
@@ -308,6 +449,7 @@ export function load(): { data: Partial<PersistedAppData> | null; warning?: stri
     const rec = parsedRaw as Record<string, unknown>;
     const clean: Partial<PersistedAppData> = {};
     const resetSections: string[] = [];
+    const droppedForBackup: Record<string, unknown> = {};
 
     const trySection = <T>(
       key: keyof PersistedAppData,
@@ -320,6 +462,7 @@ export function load(): { data: Partial<PersistedAppData> | null; warning?: stri
         (clean as Record<string, unknown>)[key] = checked.data;
       } else {
         resetSections.push(labelId);
+        droppedForBackup[key] = rec[key];
       }
     };
 
@@ -334,21 +477,23 @@ export function load(): { data: Partial<PersistedAppData> | null; warning?: stri
     if (rec.history !== undefined) {
       if (Array.isArray(rec.history)) {
         const validHistory: HistoryEntry[] = [];
-        let droppedCount = 0;
+        const droppedHistory: unknown[] = [];
         for (const item of rec.history) {
           const checkedItem = HistoryEntrySchema.safeParse(item);
           if (checkedItem.success) {
             validHistory.push(checkedItem.data);
           } else {
-            droppedCount += 1;
+            droppedHistory.push(item);
           }
         }
         clean.history = validHistory.slice(0, HISTORY_MAX);
-        if (droppedCount > 0) {
-          resetSections.push(`Riwayat Run (${droppedCount} entri tidak valid dilewati)`);
+        if (droppedHistory.length > 0) {
+          resetSections.push(`Riwayat Run (${droppedHistory.length} entri tidak valid dilewati)`);
+          droppedForBackup.history = droppedHistory;
         }
       } else {
         resetSections.push('Riwayat Run');
+        droppedForBackup.history = rec.history;
       }
     }
 
@@ -361,7 +506,7 @@ export function load(): { data: Partial<PersistedAppData> | null; warning?: stri
 
     let backupInfo: BackupCorruptResult | undefined;
     if (resetSections.length > 0) {
-      backupInfo = backupCorruptRawPayload(raw);
+      backupInfo = backupCorruptRawPayload(raw, droppedForBackup);
     }
 
     const backupDetails: string[] = [];
@@ -389,13 +534,16 @@ export function load(): { data: Partial<PersistedAppData> | null; warning?: stri
   }
 }
 
-export function buildRawExportPayload(data: PersistedAppData): ExportFile {
+export type RawExportPayload = ExportFile & { recoveryExport: true };
+
+export function buildRawExportPayload(data: PersistedAppData): RawExportPayload {
   const normalizedHistory = data.history.slice(0, HISTORY_MAX).map((entry) => ({
     ...entry,
     run: normalizeRunForPersistence(entry.run),
   }));
 
   return {
+    recoveryExport: true,
     schemaVersion: EXPORT_SCHEMA_VERSION,
     exportedAt: new Date().toISOString(),
     profile: data.profile,
@@ -417,12 +565,157 @@ export function exportAll(data: PersistedAppData): ExportFile {
   return ExportFileSchema.parse(buildRawExportPayload(data));
 }
 
+export interface RecoveryImportMeta {
+  droppedSections: string[];
+  keptSections: Array<keyof PersistedAppData>;
+  partialData: Partial<PersistedAppData>;
+}
+
+const RECOVERY_PLACEHOLDER_PROFILE: ChannelProfile = {
+  niche: 'Pemulihan Darurat',
+  sensitiveNiche: false,
+  audience: {
+    ageRange: '18-34 tahun',
+    interests: ['Umum'],
+    level: 'Pemula',
+  },
+  language: 'Indonesia',
+  tone: 'Informatif',
+  platform: 'youtube_shorts',
+  postingFrequency: '3x seminggu',
+  targetDuration: '30-60 detik',
+  voiceType: 'Narasi standar',
+  visualStyle: {
+    mode: 'template',
+    template: 'Minimalis',
+  },
+};
+
+function parseRecoveryExport(rec: Record<string, unknown>):
+  | { ok: true; file: ExportFile; recovery: RecoveryImportMeta }
+  | { ok: false; error: string } {
+  if (rec.schemaVersion !== EXPORT_SCHEMA_VERSION) {
+    return {
+      ok: false,
+      error: `Versi skema file ekspor darurat tidak didukung (ditemukan ${String(rec.schemaVersion)}, diharapkan v${EXPORT_SCHEMA_VERSION}).`,
+    };
+  }
+
+  const partialData: Partial<PersistedAppData> = {};
+  const droppedSections: string[] = [];
+  const keptSections: Array<keyof PersistedAppData> = [];
+
+  if (rec.profile !== undefined) {
+    const checked = ChannelProfileSchema.safeParse(rec.profile);
+    if (checked.success) {
+      partialData.profile = checked.data;
+      keptSections.push('profile');
+    } else {
+      droppedSections.push('Profil Channel');
+    }
+  }
+
+  const tryRecoveryArray = <T>(
+    key: 'styleProfiles' | 'styleReferences' | 'modelConfigs' | 'knowledge' | 'history',
+    labelName: string,
+    itemSchema: z.ZodType<T>,
+    maxItems: number
+  ) => {
+    const rawVal = rec[key];
+    if (rawVal === undefined) return;
+    if (!Array.isArray(rawVal)) {
+      droppedSections.push(labelName);
+      return;
+    }
+    const validItems: T[] = [];
+    let droppedCount = 0;
+    for (const item of rawVal) {
+      const checked = itemSchema.safeParse(item);
+      if (checked.success) {
+        validItems.push(checked.data);
+      } else {
+        droppedCount += 1;
+      }
+    }
+    if (droppedCount > 0) {
+      droppedSections.push(`${labelName} (${droppedCount} entri dilewati)`);
+    }
+    if (rawVal.length === 0 || validItems.length > 0) {
+      (partialData as Record<string, unknown>)[key] = validItems.slice(0, maxItems);
+      keptSections.push(key);
+    }
+  };
+
+  tryRecoveryArray('styleProfiles', 'Profil Gaya', StyleProfileSchema, 30);
+  tryRecoveryArray('styleReferences', 'Referensi Gaya', StyleReferenceSchema, 30);
+  tryRecoveryArray('modelConfigs', 'Pengaturan Model', AgentModelConfigSchema, 20);
+  tryRecoveryArray('knowledge', 'Blok Pengetahuan', KnowledgeBlockSchema, 32);
+  tryRecoveryArray('history', 'Riwayat Run', HistoryEntrySchema, HISTORY_MAX);
+
+  const tryRecoveryOptional = (
+    key: 'lastIdeas' | 'lastAudit' | 'lastAnalysis',
+    labelName: string
+  ) => {
+    if (rec[key] === undefined) return;
+    const checked = AgentResultSchema.safeParse(rec[key]);
+    if (checked.success) {
+      partialData[key] = checked.data;
+      keptSections.push(key);
+    } else {
+      droppedSections.push(labelName);
+    }
+  };
+
+  tryRecoveryOptional('lastIdeas', 'Hasil Riset Terakhir');
+  tryRecoveryOptional('lastAudit', 'Hasil Audit Terakhir');
+  tryRecoveryOptional('lastAnalysis', 'Hasil Analitik Terakhir');
+
+  if (keptSections.length === 0) {
+    return {
+      ok: false,
+      error: 'File ekspor darurat tidak memiliki bagian valid yang dapat dipulihkan.',
+    };
+  }
+
+  const exportedAt =
+    typeof rec.exportedAt === 'string' && rec.exportedAt.trim()
+      ? rec.exportedAt.slice(0, 64)
+      : new Date().toISOString();
+
+  const file: ExportFile = {
+    schemaVersion: EXPORT_SCHEMA_VERSION,
+    exportedAt,
+    profile: partialData.profile ?? RECOVERY_PLACEHOLDER_PROFILE,
+    styleProfiles: partialData.styleProfiles ?? [],
+    styleReferences: partialData.styleReferences ?? [],
+    modelConfigs: partialData.modelConfigs ?? [],
+    knowledge: partialData.knowledge ?? [],
+    history: partialData.history ?? [],
+    ...(partialData.lastIdeas ? { lastIdeas: partialData.lastIdeas } : {}),
+    ...(partialData.lastAudit ? { lastAudit: partialData.lastAudit } : {}),
+    ...(partialData.lastAnalysis ? { lastAnalysis: partialData.lastAnalysis } : {}),
+  };
+
+  return {
+    ok: true,
+    file,
+    recovery: {
+      droppedSections,
+      keptSections,
+      partialData,
+    },
+  };
+}
+
 /**
- * Memvalidasi file JSON impor dengan skema ExportFile secara ketat sebelum menimpa state.
+ * Memvalidasi file JSON impor dengan skema ExportFile secara ketat sebelum menimpa state,
+ * atau secara toleran per-bagian bila ditandai sebagai file ekspor darurat (`recoveryExport: true`).
  */
 export function importAll(
   rawJsonText: string
-): { ok: true; file: ExportFile } | { ok: false; error: string } {
+):
+  | { ok: true; file: ExportFile; recovery?: RecoveryImportMeta }
+  | { ok: false; error: string } {
   if (rawJsonText.length > MAX_IMPORT_BYTES) {
     return {
       ok: false,
@@ -435,6 +728,15 @@ export function importAll(
     parsed = JSON.parse(rawJsonText);
   } catch {
     return { ok: false, error: 'File bukan JSON yang valid.' };
+  }
+
+  if (
+    parsed &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed) &&
+    (parsed as Record<string, unknown>).recoveryExport === true
+  ) {
+    return parseRecoveryExport(parsed as Record<string, unknown>);
   }
 
   const checked = ExportFileSchema.safeParse(parsed);

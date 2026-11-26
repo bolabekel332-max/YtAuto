@@ -15,7 +15,7 @@ import {
 import type { ApiErrorCode } from '../shared/api';
 import {
   CUSTOM_PROVIDER_BASE_URL,
-  getEffectiveGeminiModelAllowlist,
+  getEffectiveModelAllowlist,
   getEnv,
   PROVIDER_ALLOWLIST,
 } from './config';
@@ -56,18 +56,16 @@ export function validateConfig(
     );
   }
 
-  if (config.providerId === 'gemini') {
-    const effectiveAllowlist = getEffectiveGeminiModelAllowlist(getEnv());
-    if (effectiveAllowlist.length > 0) {
-      const modelsToCheck = [config.model, ...config.fallbackModels];
-      for (const m of modelsToCheck) {
-        if (!effectiveAllowlist.includes(m)) {
-          throw new AppApiError(
-            'invalid_request',
-            400,
-            `Model Gemini "${m}" tidak termasuk dalam GEMINI_MODEL_ALLOWLIST server (${effectiveAllowlist.join(', ')}).`
-          );
-        }
+  const effectiveAllowlist = getEffectiveModelAllowlist(config.providerId, getEnv());
+  if (effectiveAllowlist.length > 0) {
+    const modelsToCheck = [config.model, ...config.fallbackModels];
+    for (const m of modelsToCheck) {
+      if (!effectiveAllowlist.includes(m)) {
+        throw new AppApiError(
+          'invalid_request',
+          400,
+          `Model "${m}" untuk provider "${config.providerId}" tidak termasuk dalam allowlist model server (${effectiveAllowlist.join(', ')}).`
+        );
       }
     }
   }

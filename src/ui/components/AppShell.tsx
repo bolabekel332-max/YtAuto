@@ -11,6 +11,7 @@ import {
   ShieldCheck,
   X,
 } from 'lucide-react';
+import { isPipelineLocked } from '../../agents/pipeline';
 import type { ScreenId } from '../../state/store';
 import { usePipeline } from '../../state/pipelineContext';
 import {
@@ -105,6 +106,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [, setCorruptBackupTick] = useState(0);
 
+  const conflictLocked = isBusy || isPipelineLocked();
   const activeNav = NAV_ITEMS.find((n) => n.id === state.currentScreen) ?? NAV_ITEMS[0];
   const corruptBackupExists = hasCorruptBackup();
 
@@ -277,15 +279,27 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
                       <>
                         <button
                           type="button"
+                          disabled={conflictLocked}
                           onClick={reloadFromStorage}
-                          className="rounded-md bg-amber-400 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-amber-300"
+                          title={
+                            conflictLocked
+                              ? 'Tunggu pipeline selesai sebelum memuat ulang data tab'
+                              : undefined
+                          }
+                          className="rounded-md bg-amber-400 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-amber-300 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           Muat data tab terbaru
                         </button>
                         <button
                           type="button"
+                          disabled={conflictLocked}
                           onClick={overwriteStorageFromCurrentTab}
-                          className="rounded-md border border-amber-400/50 bg-amber-950/60 px-3 py-1.5 text-xs font-medium text-amber-100 hover:bg-amber-900/70"
+                          title={
+                            conflictLocked
+                              ? 'Tunggu pipeline selesai sebelum menimpa data tab'
+                              : undefined
+                          }
+                          className="rounded-md border border-amber-400/50 bg-amber-950/60 px-3 py-1.5 text-xs font-medium text-amber-100 hover:bg-amber-900/70 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           Timpa dengan data tab ini
                         </button>

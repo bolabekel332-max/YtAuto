@@ -109,6 +109,13 @@ export function handleRouteError(res: Response, err: unknown): void {
   res.status(500).json(body);
 }
 
+const NOUS_DISABLED_MESSAGE =
+  'Endpoint OAuth Nous dinonaktifkan saat HOST non-loopback (atur ENABLE_NOUS_OAUTH=true bila dilindungi gateway akses).';
+
+export function isNousOAuthAllowed(env = getEnv()): boolean {
+  return isLoopbackHost(env.host) || env.enableNousOAuth;
+}
+
 export function registerRoutes(app: Express): void {
   const api = express.Router();
 
@@ -132,7 +139,7 @@ export function registerRoutes(app: Express): void {
       providers: listStatus(),
       dailyCallsUsed: usage.used,
       dailyCallCap: usage.cap,
-      nousOAuthEnabled: isLoopbackHost(env.host) || env.enableNousOAuth,
+      nousOAuthEnabled: isNousOAuthAllowed(env),
     };
     res.json(payload);
   });
@@ -265,13 +272,11 @@ export function registerRoutes(app: Express): void {
   });
 
   api.use('/oauth/nous', (_req: Request, res: Response, next) => {
-    const env = getEnv();
-    if (!isLoopbackHost(env.host) && !env.enableNousOAuth) {
+    if (!isNousOAuthAllowed()) {
       const payload: ApiErrorBody = {
         error: {
           code: 'invalid_request',
-          message:
-            'Endpoint OAuth Nous dinonaktifkan saat HOST non-loopback (atur ENABLE_NOUS_OAUTH=true bila dilindungi gateway akses).',
+          message: NOUS_DISABLED_MESSAGE,
         },
       };
       res.status(404).json(payload);
@@ -327,6 +332,9 @@ export function registerRoutes(app: Express): void {
     try {
       const { providerId } = req.params;
       if (providerId === 'nous') {
+        if (!isNousOAuthAllowed()) {
+          throw new AppApiError('invalid_request', 404, NOUS_DISABLED_MESSAGE);
+        }
         res.json(await fetchNousModels());
         return;
       }

@@ -33,6 +33,7 @@ export interface LLMResponse {
   json?: unknown;
   text?: string;
   sources?: Array<{ title: string; url: string }>;
+  searchNotes?: string;
   tokens?: number;
   truncated?: boolean;
 }
@@ -112,7 +113,7 @@ export function sanitizeErrorMessage(raw: unknown, maxLen = 280): string {
     .replace(/([?&](?:key|api_key|token|access_token|secret)=)[^&\s"'`]+/gi, '$1[REDACTED]')
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 [REDACTED]')
     .replace(
-      /((?:x-goog-api-key|x-app-access-code|authorization|api[-_]?key|secret)\s*[:=]\s*["']?)[^\s"',;}\]]+/gi,
+      /((?:x-goog-api-key|authorization|api[-_]?key|secret)\s*[:=]\s*["']?)[^\s"',;}\]]+/gi,
       '$1[REDACTED]'
     )
     .replace(/\bAIza[0-9A-Za-z_-]{10,}\b/g, '[REDACTED_KEY]')

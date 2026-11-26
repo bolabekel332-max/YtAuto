@@ -4,10 +4,28 @@ import type { ExportFile } from '../../../shared/schemas';
 import { isPipelineLocked } from '../../agents/pipeline';
 import { label } from '../../config/labels';
 import { usePipeline } from '../../state/pipelineContext';
-import { buildRawExportPayload, exportAll, importAll, isDirty } from '../../state/persistence';
+import {
+  buildRawExportPayload,
+  exportAll,
+  importAll,
+  isDirty,
+  type RecoveryImportMeta,
+} from '../../state/persistence';
 import { extractPersistedSnapshot, useStore } from '../../state/store';
 import { AccessibleDialog } from './AccessibleDialog';
 import { Tooltip } from './Tooltip';
+
+const RECOVERY_SECTION_LABELS: Record<string, string> = {
+  profile: 'Profil Channel',
+  styleProfiles: 'Profil Gaya',
+  styleReferences: 'Referensi Gaya',
+  modelConfigs: 'Pengaturan Model',
+  knowledge: 'Blok Pengetahuan',
+  history: 'Riwayat Run',
+  lastIdeas: 'Hasil Riset Terakhir',
+  lastAudit: 'Hasil Audit Terakhir',
+  lastAnalysis: 'Hasil Analitik Terakhir',
+};
 
 export interface HeaderProps {
   title: string;
@@ -18,7 +36,10 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
   const { state, dispatch } = useStore();
   const { isBusy } = usePipeline();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [importCandidate, setImportCandidate] = useState<ExportFile | null>(null);
+  const [importCandidate, setImportCandidate] = useState<{
+    file: ExportFile;
+    recovery?: RecoveryImportMeta;
+  } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [rawExportAvailable, setRawExportAvailable] = useState(false);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
@@ -106,7 +127,7 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
         setActionError(result.error);
         return;
       }
-      setImportCandidate(result.file);
+      setImportCandidate({ file: result.file, recovery: result.recovery });
     } catch {
       setActionError('Gagal membaca file JSON yang dipilih.');
     } finally {
@@ -121,7 +142,15 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
       setImportCandidate(null);
       return;
     }
-    dispatch({ type: 'IMPORT_ALL', file: importCandidate });
+    if (importCandidate.recovery) {
+      dispatch({
+        type: 'IMPORT_RECOVERY',
+        partialData: importCandidate.recovery.partialData,
+        keptSections: importCandidate.recovery.keptSections,
+      });
+    } else {
+      dispatch({ type: 'IMPORT_ALL', file: importCandidate.file });
+    }
     setImportCandidate(null);
   };
 
@@ -228,7 +257,7 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
                 onClick={handleRawExport}
                 className="rounded-md border border-amber-400/50 bg-amber-950/60 px-2.5 py-1 text-xs font-semibold text-amber-100 hover:bg-amber-900/70"
               >
-                Ekspor mentah (tanpa validasi)
+                Ekspor mentah (hanya pemulihan darurat)
               </button>
             )}
             <button
@@ -255,15 +284,29 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle }) => {
             <h2 className="text-base font-semibold text-slate-100">
               Konfirmasi Impor Cadangan JSON
             </h2>
-            <p className="text-xs leading-relaxed text-slate-300">
-              Impor file bertanggal{' '}
-              <span className="font-mono text-slate-100">
-                {importCandidate.exportedAt.slice(0, 19).replace('T', ' ')}
-              </span>{' '}
-              akan menimpa Profil Channel, Profil Gaya ({importCandidate.styleProfiles.length}),
-              Pengetahuan ({importCandidate.knowledge.length}), Pengaturan Model, dan Riwayat (
-              {importCandidate.history.length} entri) saat ini.
-            </p>
+            {importCandidate.recovery ? (
+              <p className="rounded-lg border border-amber-500/40 bg-amber-950/50 px-3 py-2 text-xs text-amber-100 leading-relaxed">
+                File ekspor darurat: bagian{' '}
+                {importCandidate.recovery.droppedSections.length > 0
+                  ? importCandidate.recovery.droppedSections.join(', ')
+                  : 'tidak ada yang rusak'}{' '}
+                dilewati, bagian{' '}
+                {importCandidate.recovery.keptSections
+                  .map((k) => RECOVERY_SECTION_LABELS[k] ?? k)
+                  .join(', ')}{' '}
+                akan dipulihkan (bagian yang dilewati tetap memakai nilai saat ini).
+              </p>
+            ) : (
+              <p className="text-xs leading-relaxed text-slate-300">
+                Impor file bertanggal{' '}
+                <span className="font-mono text-slate-100">
+                  {importCandidate.file.exportedAt.slice(0, 19).replace('T', ' ')}
+                </span>{' '}
+                akan menimpa Profil Channel, Profil Gaya ({importCandidate.file.styleProfiles.length}),
+                Pengetahuan ({importCandidate.file.knowledge.length}), Pengaturan Model, dan Riwayat (
+                {importCandidate.file.history.length} entri) saat ini.
+              </p>
+            )}
             <p className="rounded-lg border border-amber-500/40 bg-amber-950/50 px-3 py-2 text-xs text-amber-100 leading-relaxed">
               Blok pengetahuan dalam file ini akan menjadi instruksi bagi agent. Impor hanya file buatan Anda sendiri.
             </p>

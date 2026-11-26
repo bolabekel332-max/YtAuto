@@ -14,6 +14,7 @@ import type {
   StyleProfile,
   StyleReference,
 } from '../../shared/schemas';
+import { isPipelineLocked } from '../agents/pipeline';
 import { PROFILE_PRESETS } from '../config/presets';
 import { DEFAULT_KNOWLEDGE } from '../knowledge/blocks';
 import { DEFAULT_MODEL_CONFIGS } from './defaults';
@@ -138,6 +139,11 @@ export type AppAction =
   | { type: 'SET_LAST_ANALYSIS'; result: AgentResult }
   | { type: 'MARK_EXPORTED'; exportedAt: string }
   | { type: 'IMPORT_ALL'; file: ExportFile }
+  | {
+      type: 'IMPORT_RECOVERY';
+      partialData: Partial<PersistedAppData>;
+      keptSections: Array<keyof PersistedAppData>;
+    }
   | { type: 'CLEAR_LOCAL_DATA' }
   | { type: 'RELOAD_FROM_STORAGE'; loaded: AppState }
   | { type: 'RESOLVE_STORAGE_CONFLICT_OVERWRITE' }
@@ -324,6 +330,37 @@ export function appReducer(state: AppState, action: AppAction): AppState {
         storageConflict: false,
       };
 
+    case 'IMPORT_RECOVERY': {
+      const kept = new Set(action.keptSections);
+      const partial = action.partialData;
+      return {
+        ...state,
+        ...(kept.has('profile') && partial.profile
+          ? { profile: partial.profile, profileConfigured: true }
+          : {}),
+        ...(kept.has('styleProfiles') && partial.styleProfiles
+          ? { styleProfiles: partial.styleProfiles }
+          : {}),
+        ...(kept.has('styleReferences') && partial.styleReferences
+          ? { styleReferences: partial.styleReferences }
+          : {}),
+        ...(kept.has('modelConfigs') && partial.modelConfigs
+          ? { modelConfigs: mergeModelConfigs(partial.modelConfigs, DEFAULT_MODEL_CONFIGS) }
+          : {}),
+        ...(kept.has('knowledge') && partial.knowledge
+          ? { knowledge: mergeKnowledgeBlocks(partial.knowledge, DEFAULT_KNOWLEDGE) }
+          : {}),
+        ...(kept.has('history') && partial.history
+          ? { history: partial.history.slice(0, HISTORY_MAX) }
+          : {}),
+        ...(kept.has('lastIdeas') ? { lastIdeas: partial.lastIdeas } : {}),
+        ...(kept.has('lastAudit') ? { lastAudit: partial.lastAudit } : {}),
+        ...(kept.has('lastAnalysis') ? { lastAnalysis: partial.lastAnalysis } : {}),
+        changesSinceExport: state.changesSinceExport + 1,
+        storageConflict: false,
+      };
+    }
+
     case 'CLEAR_LOCAL_DATA':
       return buildDefaultState();
 
@@ -382,6 +419,18 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   warningRef.current = state.storageWarning;
 
   const dispatch = useCallback((action: AppAction) => {
+    if (
+      (action.type === 'RELOAD_FROM_STORAGE' ||
+        action.type === 'RESOLVE_STORAGE_CONFLICT_OVERWRITE') &&
+      isPipelineLocked()
+    ) {
+      rawDispatch({
+        type: 'SET_STORAGE_WARNING',
+        warning: 'Tunggu pipeline selesai sebelum menyinkronkan atau menimpa data tab.',
+      });
+      return;
+    }
+
     if (action.type === 'CLEAR_LOCAL_DATA') {
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
@@ -420,7 +469,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return;
     }
 
-    if (action.type === 'IMPORT_ALL') {
+    if (action.type === 'IMPORT_ALL' || action.type === 'IMPORT_RECOVERY') {
       externalTabConflictRef.current = false;
     }
 

@@ -238,7 +238,16 @@ export const AgentOutput: React.FC<AgentOutputProps> = ({
         </div>
       </div>
 
-      {searchUsed && groundedCount === 0 && (
+      {result.repairedWithoutGrounding && (
+        <div
+          role="status"
+          className="rounded-xl border border-amber-500/40 bg-amber-950/45 px-4 py-2.5 text-xs text-amber-100"
+        >
+          Output diperbaiki tanpa data pencarian; sumber tidak ditampilkan.
+        </div>
+      )}
+
+      {searchUsed && groundedCount === 0 && !result.repairedWithoutGrounding && (
         <div
           role="status"
           className="rounded-xl border border-amber-500/30 bg-amber-950/35 px-4 py-2.5 text-xs text-amber-100"

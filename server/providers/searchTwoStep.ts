@@ -135,6 +135,7 @@ export async function runTwoStep(params: {
     response: {
       ...step2.response,
       sources: mergedSources,
+      searchNotes: notesText.slice(0, 20_000),
       tokens: totalTokens > 0 ? totalTokens : step2.response.tokens,
     },
     modelUsed: step2.modelUsed,

@@ -85,12 +85,12 @@ export async function withRetryAndFallback(
         beforeModelCall();
         const response = await provider.generate(req, model);
         if (response.truncated) {
-          throw new ProviderCallError(
-            'output_truncated',
-            502,
-            `Output model (${model}) terpotong sebelum selesai. Naikkan nilai Max Tokens pada Pengaturan Model lalu ulangi langkah.`,
-            false
-          );
+          const { serverMaxTokensCap } = getEnv();
+          const message =
+            req.maxTokens >= serverMaxTokensCap
+              ? `Output terpotong dan Max Tokens sudah mencapai batas server (SERVER_MAX_TOKENS_CAP=${serverMaxTokensCap}). Persingkat input atau naikkan batas di environment server.`
+              : `Output model (${model}) terpotong sebelum selesai. Naikkan nilai Max Tokens pada Pengaturan Model lalu ulangi langkah.`;
+          throw new ProviderCallError('output_truncated', 502, message, false);
         }
         return { response, modelUsed: model };
       } catch (err) {

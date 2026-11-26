@@ -241,6 +241,7 @@ export const AgentResultSchema = z.object({
   sources: z.array(SourceRefSchema).max(100).optional(),
   searchUsed: z.boolean().optional(),
   groundedSourceCount: z.number().int().min(0).optional(),
+  repairedWithoutGrounding: z.boolean().optional(),
   fallbackUsed: z.boolean().optional(),
   requestedModel: z.string().max(120).optional(),
   model: z.string().max(120),
