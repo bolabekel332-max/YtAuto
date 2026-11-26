@@ -433,6 +433,11 @@ test('mapGeminiError membedakan Network error, Timeout lokal, dan error tanpa st
   assert.equal(mappedTimeout.meta?.upstreamStatus, undefined);
   assert.equal(mappedTimeout.code, 'timeout');
   assert.equal(mappedTimeout.httpStatus, 504);
+  assert.ok(mappedTimeout.meta?.sanitizedMessage?.includes('batas waktu lokal'));
+  assert.equal(
+    DEFAULT_MODEL_CONFIGS.find((c) => c.agentId === 'orchestrator')?.timeoutMs,
+    120000
+  );
 
   // Error object tanpa status numerik (Google status string saja -> tidak menyimpulkan HTTP status)
   const noNumGoogle = mockSdkApiError(undefined, 'UNAVAILABLE', 'Backend unavailable momentarily');

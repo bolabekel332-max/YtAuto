@@ -15,8 +15,8 @@ import {
 import type { ApiErrorCode } from '../shared/api';
 import {
   CUSTOM_PROVIDER_BASE_URL,
-  getEffectiveModelAllowlist,
   getEnv,
+  isModelAllowedByServer,
   PROVIDER_ALLOWLIST,
 } from './config';
 import type { LLMMediaItem, LLMProvider } from './providers/types';
@@ -56,17 +56,16 @@ export function validateConfig(
     );
   }
 
-  const effectiveAllowlist = getEffectiveModelAllowlist(config.providerId, getEnv());
-  if (effectiveAllowlist.length > 0) {
-    const modelsToCheck = [config.model, ...config.fallbackModels];
-    for (const m of modelsToCheck) {
-      if (!effectiveAllowlist.includes(m)) {
-        throw new AppApiError(
-          'invalid_request',
-          400,
-          `Model "${m}" untuk provider "${config.providerId}" tidak termasuk dalam allowlist model server (${effectiveAllowlist.join(', ')}).`
-        );
-      }
+  const env = getEnv();
+  const modelsToCheck = [config.model, ...config.fallbackModels];
+  for (const m of modelsToCheck) {
+    const check = isModelAllowedByServer(config.providerId, m, env);
+    if (!check.allowed) {
+      throw new AppApiError(
+        'invalid_request',
+        400,
+        `Model "${m}" untuk provider "${config.providerId}" tidak termasuk dalam allowlist model server (${check.allowlist.join(', ')}).`
+      );
     }
   }
 

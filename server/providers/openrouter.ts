@@ -1,5 +1,5 @@
 import type { ProviderModelItem, ProviderModelsResponse } from '../../shared/api';
-import { getEnv } from '../config';
+import { getEnv, recordCatalogFreeModels } from '../config';
 import {
   combineAbortSignals,
   parseRetryAfterMs,
@@ -434,6 +434,11 @@ export async function fetchOpenRouterModels(
       if (a.isFree !== b.isFree) return a.isFree ? -1 : 1;
       return a.id.localeCompare(b.id);
     });
+
+    recordCatalogFreeModels(
+      'openrouter',
+      models.filter((m) => m.isFree).map((m) => m.id)
+    );
 
     return {
       providerId: 'openrouter',

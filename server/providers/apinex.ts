@@ -1,5 +1,5 @@
 import type { ProviderModelItem, ProviderModelsResponse } from '../../shared/api';
-import { getEnv } from '../config';
+import { getEnv, recordCatalogFreeModels } from '../config';
 import { wrapAsData } from '../promptBuilder';
 import {
   combineAbortSignals,
@@ -796,6 +796,11 @@ export async function fetchApinexModels(
       if (a.isFree !== b.isFree) return a.isFree ? -1 : 1;
       return a.id.localeCompare(b.id);
     });
+
+    recordCatalogFreeModels(
+      'apinex',
+      models.filter((m) => m.isFree).map((m) => m.id)
+    );
 
     return {
       providerId: 'apinex',

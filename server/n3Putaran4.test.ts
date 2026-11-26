@@ -11,7 +11,11 @@ import { DEFAULT_KNOWLEDGE } from '../src/knowledge/blocks';
 import { DEFAULT_MODEL_CONFIGS } from '../src/state/defaults';
 import { runAgent } from './agentRunner';
 import { resetAuthStateForTests } from './auth';
-import { getEffectiveModelAllowlist } from './config';
+import {
+  clearCatalogFreeModelsForTests,
+  getEffectiveModelAllowlist,
+  recordCatalogFreeModels,
+} from './config';
 import { callApinexChat } from './providers/apinex';
 import { FIXTURES } from './providers/mockFixtures';
 import { withRetryAndFallback } from './providers/retry';
@@ -403,7 +407,57 @@ test('N3-05: allowlist model berlaku untuk seluruh provider live pada HOST non-l
         ),
       (err: unknown) => err instanceof AppApiError && err.code === 'invalid_request'
     );
+    // Model gratis katalog (free/* di APInex, *:free di OpenRouter/Nous, dan cache isFree katalog) tetap diizinkan saat tidak ada allowlist eksplisit
+    process.env.HOST = '0.0.0.0';
+    process.env.OPENROUTER_MODEL_ALLOWLIST = '';
+    assert.doesNotThrow(() =>
+      validateConfig(
+        {
+          ...DEFAULT_MODEL_CONFIGS[0],
+          providerId: 'apinex',
+          model: 'free/glm-5.3',
+        },
+        makeDummyProvider('apinex')
+      )
+    );
+    assert.doesNotThrow(() =>
+      validateConfig(
+        {
+          ...DEFAULT_MODEL_CONFIGS[0],
+          providerId: 'openrouter',
+          model: 'meta-llama/llama-3.3-70b-instruct:free',
+        },
+        makeDummyProvider('openrouter')
+      )
+    );
+    recordCatalogFreeModels('apinex', ['custom-zero-dollar-catalog-model']);
+    assert.doesNotThrow(() =>
+      validateConfig(
+        {
+          ...DEFAULT_MODEL_CONFIGS[0],
+          providerId: 'apinex',
+          model: 'custom-zero-dollar-catalog-model',
+        },
+        makeDummyProvider('apinex')
+      )
+    );
+
+    // Env eksplisit tetap ketat (mengabaikan free/* bila tidak tercantum di APINEX_MODEL_ALLOWLIST)
+    process.env.APINEX_MODEL_ALLOWLIST = 'free/gemini-4-hydrogen';
+    assert.throws(
+      () =>
+        validateConfig(
+          {
+            ...DEFAULT_MODEL_CONFIGS[0],
+            providerId: 'apinex',
+            model: 'free/glm-5.3',
+          },
+          makeDummyProvider('apinex')
+        ),
+      (err: unknown) => err instanceof AppApiError && err.code === 'invalid_request'
+    );
   } finally {
+    clearCatalogFreeModelsForTests();
     for (const k of keys) {
       if (saved[k] === undefined) delete process.env[k];
       else process.env[k] = saved[k];

@@ -319,7 +319,11 @@ export function mapGeminiError(err: unknown, hasYoutubeMedia: boolean): Provider
       504,
       'Permintaan ke Gemini melewati batas waktu lokal (timeout). Coba naikkan timeout di Pengaturan Model atau gunakan input yang lebih ringkas.',
       false,
-      baseMeta
+      {
+        ...baseMeta,
+        sanitizedMessage:
+          'Permintaan ke Gemini melewati batas waktu lokal (timeout) sebelum upstream selesai merespons.',
+      }
     );
   }
 

@@ -97,11 +97,19 @@ test('mergeModelConfigs dan mergeKnowledgeBlocks mempertahankan suntingan user s
   const editedConfig = {
     ...DEFAULT_MODEL_CONFIGS[0],
     model: 'gemini-custom-test',
+    timeoutMs: 60000,
   };
   const mergedConfigs = mergeModelConfigs([editedConfig], DEFAULT_MODEL_CONFIGS);
   assert.equal(mergedConfigs.length, DEFAULT_MODEL_CONFIGS.length);
   assert.equal(mergedConfigs[0].model, 'gemini-custom-test');
+  assert.equal(mergedConfigs[0].timeoutMs, 120000);
   assert.equal(mergedConfigs[1].agentId, DEFAULT_MODEL_CONFIGS[1].agentId);
+
+  const customTimeoutMerged = mergeModelConfigs(
+    [{ ...DEFAULT_MODEL_CONFIGS[0], timeoutMs: 45000 }],
+    DEFAULT_MODEL_CONFIGS
+  );
+  assert.equal(customTimeoutMerged[0].timeoutMs, 45000);
 
   const editedBlock = {
     ...DEFAULT_KNOWLEDGE[0],

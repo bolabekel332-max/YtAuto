@@ -19,11 +19,11 @@ export const RECOMMENDED_AGENT_SETTINGS: Record<
   AgentId,
   { suggestedTemp: number; maxTokens: number; timeoutMs: number; useSearch: boolean }
 > = {
-  orchestrator: { suggestedTemp: 0.4, maxTokens: 4096, timeoutMs: 60000, useSearch: false },
+  orchestrator: { suggestedTemp: 0.4, maxTokens: 4096, timeoutMs: 120000, useSearch: false },
   researcher: { suggestedTemp: 0.7, maxTokens: 6144, timeoutMs: 120000, useSearch: true },
   scriptwriter: { suggestedTemp: 0.8, maxTokens: 8192, timeoutMs: 120000, useSearch: false },
   visual: { suggestedTemp: 0.7, maxTokens: 8192, timeoutMs: 120000, useSearch: false },
-  packaging: { suggestedTemp: 0.8, maxTokens: 3072, timeoutMs: 60000, useSearch: false },
+  packaging: { suggestedTemp: 0.8, maxTokens: 3072, timeoutMs: 90000, useSearch: false },
   compliance: { suggestedTemp: 0.2, maxTokens: 6144, timeoutMs: 120000, useSearch: true },
   analyst: { suggestedTemp: 0.3, maxTokens: 4096, timeoutMs: 90000, useSearch: false },
   style_analyst: { suggestedTemp: 0.2, maxTokens: 4096, timeoutMs: 150000, useSearch: false },

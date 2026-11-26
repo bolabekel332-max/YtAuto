@@ -96,6 +96,40 @@ function getImplicitModelsForProvider(providerId: ProviderId): string[] {
   return Array.from(models);
 }
 
+const catalogFreeModels = new Map<ProviderId, Set<string>>();
+
+export function recordCatalogFreeModels(
+  providerId: ProviderId,
+  modelIds: Iterable<string>
+): void {
+  const next = new Set<string>();
+  for (const id of modelIds) {
+    const trimmed = id.trim();
+    if (trimmed) next.add(trimmed);
+  }
+  catalogFreeModels.set(providerId, next);
+}
+
+export function clearCatalogFreeModelsForTests(): void {
+  catalogFreeModels.clear();
+}
+
+export function isImplicitlyAllowedFreeModel(providerId: ProviderId, model: string): boolean {
+  const trimmed = model.trim();
+  if (!trimmed) return false;
+  if (catalogFreeModels.get(providerId)?.has(trimmed)) {
+    return true;
+  }
+  const lower = trimmed.toLowerCase();
+  if (providerId === 'apinex') {
+    return lower.startsWith('free/');
+  }
+  if (providerId === 'openrouter' || providerId === 'nous') {
+    return lower.endsWith(':free');
+  }
+  return false;
+}
+
 export function getEffectiveModelAllowlist(
   providerId: ProviderId,
   env: Pick<
@@ -115,9 +149,43 @@ export function getEffectiveModelAllowlist(
     return explicit;
   }
   if (!isLoopbackHost(env.host)) {
-    return getImplicitModelsForProvider(providerId);
+    const merged = new Set<string>(getImplicitModelsForProvider(providerId));
+    const cachedFree = catalogFreeModels.get(providerId);
+    if (cachedFree) {
+      for (const m of cachedFree) {
+        merged.add(m);
+      }
+    }
+    return Array.from(merged);
   }
   return [];
+}
+
+export function isModelAllowedByServer(
+  providerId: ProviderId,
+  model: string,
+  env: Pick<
+    ServerEnv,
+    | 'host'
+    | 'geminiModelAllowlist'
+    | 'openrouterModelAllowlist'
+    | 'nousModelAllowlist'
+    | 'apinexModelAllowlist'
+  > = getEnv()
+): { allowed: boolean; allowlist: string[] } {
+  if (providerId === 'mock') {
+    return { allowed: true, allowlist: [] };
+  }
+  const explicit = getExplicitAllowlistForProvider(providerId, env);
+  if (explicit.length > 0) {
+    return { allowed: explicit.includes(model), allowlist: explicit };
+  }
+  if (isLoopbackHost(env.host)) {
+    return { allowed: true, allowlist: [] };
+  }
+  const allowlist = getEffectiveModelAllowlist(providerId, env);
+  const allowed = allowlist.includes(model) || isImplicitlyAllowedFreeModel(providerId, model);
+  return { allowed, allowlist };
 }
 
 function parsePositiveInt(raw: string | undefined, fallback: number): number {

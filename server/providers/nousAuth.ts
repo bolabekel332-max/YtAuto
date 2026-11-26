@@ -5,7 +5,7 @@ import type {
   NousModelsResponse,
   NousOAuthStatusResponse,
 } from '../../shared/api';
-import { getEnv } from '../config';
+import { getEnv, recordCatalogFreeModels } from '../config';
 import { ProviderCallError, sanitizeErrorMessage } from './types';
 
 export const NOUS_PORTAL_BASE = 'https://portal.nousresearch.com';
@@ -616,6 +616,11 @@ export async function fetchNousModels(
     if (a.isFree !== b.isFree) return a.isFree ? -1 : 1;
     return a.id.localeCompare(b.id);
   });
+
+  recordCatalogFreeModels(
+    'nous',
+    models.filter((m) => m.isFree).map((m) => m.id)
+  );
 
   return {
     providerId: 'nous',

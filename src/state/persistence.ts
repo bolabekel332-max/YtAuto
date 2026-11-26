@@ -382,7 +382,14 @@ export function mergeModelConfigs(
   const byAgent = new Map(saved.map((c) => [c.agentId, c]));
   return defaults.map((def) => {
     const existing = byAgent.get(def.agentId);
-    return existing ? structuredClone(existing) : structuredClone(def);
+    if (!existing) {
+      return structuredClone(def);
+    }
+    const cloned = structuredClone(existing);
+    if (cloned.agentId === 'orchestrator' && cloned.timeoutMs === 60000 && def.timeoutMs > 60000) {
+      cloned.timeoutMs = def.timeoutMs;
+    }
+    return cloned;
   });
 }
 
