@@ -1,8 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { PROVIDER_CAPABILITIES } from '../../shared/constants';
 import { DEFAULT_KNOWLEDGE } from './blocks';
 import { DEFAULT_MODEL_CONFIGS } from '../state/defaults';
-import { buildKnowledgeTransparencyReport } from './transparency';
+import {
+  buildKnowledgeTransparencyReport,
+  getSearchCapableProviders,
+} from './transparency';
 
 test('buildKnowledgeTransparencyReport covers all 8 agents and honest external source status', () => {
   const report = buildKnowledgeTransparencyReport(DEFAULT_KNOWLEDGE, DEFAULT_MODEL_CONFIGS);
@@ -56,4 +60,40 @@ test('buildKnowledgeTransparencyReport reflects live model config and mock/disab
 
   const webSearch = report.externalSources.find((s) => s.id === 'web_search');
   assert.equal(webSearch?.status, 'conditional');
+});
+
+test('V-08: getSearchCapableProviders dan laporan transparansi mengikuti perubahan PROVIDER_CAPABILITIES secara dinamis', () => {
+  const defaultProviders = getSearchCapableProviders();
+  assert.equal(defaultProviders.has('nous'), false);
+
+  const augmentedCaps = {
+    ...PROVIDER_CAPABILITIES,
+    nous: { ...PROVIDER_CAPABILITIES.nous, search: true },
+  };
+  const augmentedProviders = getSearchCapableProviders(augmentedCaps);
+  assert.equal(augmentedProviders.has('nous'), true);
+
+  const configsWithNous = DEFAULT_MODEL_CONFIGS.map((cfg) =>
+    cfg.agentId === 'researcher'
+      ? { ...cfg, providerId: 'nous' as const, model: 'qwen/qwen4-max:free', useSearch: true }
+      : cfg
+  );
+
+  const baseReport = buildKnowledgeTransparencyReport(DEFAULT_KNOWLEDGE, configsWithNous);
+  assert.equal(
+    baseReport.agents.find((a) => a.agentId === 'researcher')?.searchStatus,
+    'unsupported'
+  );
+
+  const augmentedReport = buildKnowledgeTransparencyReport(
+    DEFAULT_KNOWLEDGE,
+    configsWithNous,
+    augmentedCaps
+  );
+  assert.equal(
+    augmentedReport.agents.find((a) => a.agentId === 'researcher')?.searchStatus,
+    'active'
+  );
+  const webSearch = augmentedReport.externalSources.find((s) => s.id === 'web_search');
+  assert.ok(webSearch?.name.includes('Nous Portal'));
 });

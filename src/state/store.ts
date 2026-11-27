@@ -23,6 +23,7 @@ import {
   load,
   mergeKnowledgeBlocks,
   mergeModelConfigs,
+  mergeModelConfigsWithReport,
   save,
   STORAGE_KEY,
   type PersistedAppData,
@@ -95,6 +96,33 @@ export function buildInitialState(): AppState {
   const loaded = load();
   const saved = loaded.data;
   const fallbackProfile = structuredClone(PROFILE_PRESETS[0].profile);
+  const mergedModels = mergeModelConfigsWithReport(saved?.modelConfigs, DEFAULT_MODEL_CONFIGS);
+
+  if (
+    mergedModels.warnings.length > 0 &&
+    saved?.modelConfigs &&
+    typeof window !== 'undefined' &&
+    window.localStorage
+  ) {
+    try {
+      const raw = window.localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as unknown;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          (parsed as Record<string, unknown>).modelConfigs = mergedModels.configs;
+          window.localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+        }
+      }
+    } catch {
+      // Abaikan error penyimpanan saat menyimpan hasil migrasi timeout
+    }
+  }
+
+  const warningParts: string[] = [];
+  if (loaded.warning) warningParts.push(loaded.warning);
+  if (mergedModels.warnings.length > 0) {
+    warningParts.push(mergedModels.warnings.join(' '));
+  }
 
   return {
     currentScreen: saved?.profileConfigured ? 'studio' : 'setup',
@@ -103,7 +131,7 @@ export function buildInitialState(): AppState {
     profileConfigured: saved?.profileConfigured ?? false,
     styleProfiles: saved?.styleProfiles ?? [],
     styleReferences: saved?.styleReferences ?? [],
-    modelConfigs: mergeModelConfigs(saved?.modelConfigs, DEFAULT_MODEL_CONFIGS),
+    modelConfigs: mergedModels.configs,
     knowledge: mergeKnowledgeBlocks(saved?.knowledge, DEFAULT_KNOWLEDGE),
     history: saved?.history ?? [],
     activeRun: normalizeInterruptedRun(saved?.activeRun),
@@ -112,7 +140,7 @@ export function buildInitialState(): AppState {
     lastAnalysis: saved?.lastAnalysis,
     lastExportedAt: saved?.lastExportedAt,
     changesSinceExport: saved?.changesSinceExport ?? 0,
-    storageWarning: loaded.warning,
+    storageWarning: warningParts.length > 0 ? warningParts.join(' ') : undefined,
     storageConflict: false,
   };
 }

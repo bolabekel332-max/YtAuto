@@ -1,6 +1,6 @@
 import type { ProviderId } from '../../shared/schemas';
 import type { ProviderStatus } from '../../shared/api';
-import { getEnv } from '../config';
+import { getEnv, getProviderModelPolicy } from '../config';
 import { apinexProvider } from './apinex';
 import { customProvider } from './custom';
 import { geminiProvider } from './gemini';
@@ -43,6 +43,7 @@ export function listStatus(): ProviderStatus[] {
       tested: provider.isTested(),
       statusNote: provider.statusNote(),
       capabilities: { ...provider.capabilities },
+      modelPolicy: getProviderModelPolicy(provider.id, env),
     };
   });
 }

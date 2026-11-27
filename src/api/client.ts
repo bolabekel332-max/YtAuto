@@ -16,6 +16,10 @@ import type {
   StyleAnalyzeRequest,
   StyleAnalyzeResponse,
 } from '../../shared/api';
+import {
+  recordClientCatalogFreeModels,
+  setCachedProviderStatus,
+} from '../state/modelPolicyGuard';
 
 export class ClientApiError extends Error {
   readonly status: number;
@@ -104,10 +108,12 @@ async function requestJson<T>(
   return parsedBody as T;
 }
 
-export function getProviderStatus(): Promise<ProvidersStatusResponse> {
-  return requestJson<ProvidersStatusResponse>('/api/providers/status', {
+export async function getProviderStatus(): Promise<ProvidersStatusResponse> {
+  const res = await requestJson<ProvidersStatusResponse>('/api/providers/status', {
     method: 'GET',
   });
+  setCachedProviderStatus(res);
+  return res;
 }
 
 export function runAgent(
@@ -181,10 +187,14 @@ export function getNousModels(): Promise<NousModelsResponse> {
   });
 }
 
-export function getProviderModels(
+export async function getProviderModels(
   providerId: CatalogProviderId
 ): Promise<ProviderModelsResponse> {
-  return requestJson<ProviderModelsResponse>(`/api/providers/${providerId}/models`, {
+  const res = await requestJson<ProviderModelsResponse>(`/api/providers/${providerId}/models`, {
     method: 'GET',
   });
+  if (Array.isArray(res?.models)) {
+    recordClientCatalogFreeModels(providerId, res.models);
+  }
+  return res;
 }

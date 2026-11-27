@@ -12,6 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import { isPipelineLocked } from '../../agents/pipeline';
+import { useOptionalAgentTask } from '../../state/agentTaskContext';
 import type { ScreenId } from '../../state/store';
 import { usePipeline } from '../../state/pipelineContext';
 import {
@@ -103,9 +104,11 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
     overwriteStorageFromCurrentTab,
   } = useStore();
   const { isBusy } = usePipeline();
+  const agentTasks = useOptionalAgentTask();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [, setCorruptBackupTick] = useState(0);
 
+  const runningAgentTasks = agentTasks?.runningTasks ?? [];
   const conflictLocked = isBusy || isPipelineLocked();
   const activeNav = NAV_ITEMS.find((n) => n.id === state.currentScreen) ?? NAV_ITEMS[0];
   const corruptBackupExists = hasCorruptBackup();
@@ -266,6 +269,38 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
               }
             />
           )}
+
+          {runningAgentTasks.map((task) => {
+            const navTarget = NAV_ITEMS.find((n) => n.id === task.screen);
+            return (
+              <Banner
+                key={task.kind}
+                tone="info"
+                title={`Sedang berjalan: ${task.label}`}
+                message="Permintaan agent berjalan di latar belakang; berpindah halaman tidak membatalkan proses dan hasil akan tersimpan otomatis."
+                action={
+                  <div className="flex flex-wrap items-center gap-2">
+                    {state.currentScreen !== task.screen && (
+                      <button
+                        type="button"
+                        onClick={() => handleNavigate(task.screen)}
+                        className="rounded-md bg-sky-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-400"
+                      >
+                        Buka {navTarget?.label ?? task.label}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => agentTasks?.cancelTask(task.kind)}
+                      className="rounded-md border border-rose-400/50 bg-rose-950/60 px-3 py-1.5 text-xs font-semibold text-rose-100 hover:bg-rose-900/70"
+                    >
+                      Batalkan
+                    </button>
+                  </div>
+                }
+              />
+            );
+          })}
 
           {state.storageWarning && (
             <Banner

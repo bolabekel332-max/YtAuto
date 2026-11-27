@@ -70,18 +70,7 @@ export const MAX_AUDIT_VIDEOS = 10;
 export const KNOWLEDGE_STALE_DAYS = 30;
 export const MODEL_ID_REGEX = /^[A-Za-z0-9._:/-]+$/;
 
-export const DEFAULT_GEMINI_MODEL = 'gemini-4-hydrogen';
-
-/**
- * Model gratis bawaan per provider untuk auto-fallback internal saat upstream HTTP 402.
- * Catatan: pemilihan internal ini berjalan saat retry/fallback 402 dan tidak divalidasi ulang
- * terhadap allowlist model eksplisit per provider; matikan via AUTO_FREE_FALLBACK=false bila perlu.
- */
-export const AUTO_FREE_FALLBACK_MODELS = {
-  apinex: 'free/gemini-4-hydrogen',
-  openrouter: 'nvidia/nemotron-3-ultra-550b-a55b:free',
-  nous: 'qwen/qwen4-max:free',
-} as const;
+export { AUTO_FREE_FALLBACK_MODELS, DEFAULT_GEMINI_MODEL } from './defaults';
 
 export const PROVIDER_CAPABILITIES = {
   mock: { jsonSchema: true, jsonObject: true, search: false, video: false, image: false },

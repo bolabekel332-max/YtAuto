@@ -14,7 +14,7 @@
     "clean": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('server.js',{force:true});\"",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test server/serverCore.test.ts server/r3Security.test.ts server/n3Putaran4.test.ts server/boundary.test.ts shared/agentSchemas.test.ts src/agents/dependencies.test.ts src/agents/pipeline.test.ts src/config/modelAutoConfig.test.ts src/knowledge/transparency.test.ts src/style/localMetrics.test.ts src/style/mergeProfiles.test.ts src/state/persistence.test.ts src/state/store.test.ts src/state/n3Recovery.test.ts src/ui/r3Ui.test.tsx"
+    "test": "tsx --test server/serverCore.test.ts server/r3Security.test.ts server/n3Putaran4.test.ts server/boundary.test.ts server/finalVerification.test.ts shared/agentSchemas.test.ts src/agents/dependencies.test.ts src/agents/pipeline.test.ts src/config/modelAutoConfig.test.ts src/knowledge/transparency.test.ts src/style/localMetrics.test.ts src/style/mergeProfiles.test.ts src/state/persistence.test.ts src/state/store.test.ts src/state/n3Recovery.test.ts src/ui/r3Ui.test.tsx src/ui/finalVUi.test.tsx"
   },
   "dependencies": {
     "@google/genai": "^3.6.1",

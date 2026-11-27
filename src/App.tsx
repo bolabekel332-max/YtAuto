@@ -1,4 +1,5 @@
 import React, { Suspense, lazy } from 'react';
+import { AgentTaskProvider } from './state/agentTaskContext';
 import { PipelineProvider } from './state/pipelineContext';
 import { StoreProvider, useStore } from './state/store';
 import { AppShell } from './ui/components/AppShell';
@@ -66,9 +67,11 @@ const StudioRouter: React.FC = () => {
 export default function App() {
   return (
     <StoreProvider>
-      <PipelineProvider>
-        <StudioRouter />
-      </PipelineProvider>
+      <AgentTaskProvider>
+        <PipelineProvider>
+          <StudioRouter />
+        </PipelineProvider>
+      </AgentTaskProvider>
     </StoreProvider>
   );
 }

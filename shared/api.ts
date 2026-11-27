@@ -93,6 +93,9 @@ export interface ProviderCapabilities {
   image: boolean;
 }
 
+import type { ModelPolicyConfig } from './modelPolicy';
+export type { ModelPolicyConfig } from './modelPolicy';
+
 export interface ProviderStatus {
   id: z.infer<typeof ProviderIdSchema>;
   name: string;
@@ -101,6 +104,7 @@ export interface ProviderStatus {
   tested: boolean;
   statusNote: string;
   capabilities: ProviderCapabilities;
+  modelPolicy?: ModelPolicyConfig;
 }
 
 export interface ProvidersStatusResponse {

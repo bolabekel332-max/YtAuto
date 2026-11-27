@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { ProviderModelsResponse, ProviderStatus } from '../../shared/api';
 import { DEFAULT_GEMINI_MODEL, DEFAULT_MODEL_CONFIGS } from '../state/defaults';
-import { buildAutoConfigPlan } from './modelAutoConfig';
+import { AUTO_CONFIG_TIERS, buildAutoConfigPlan } from './modelAutoConfig';
 
 const MOCK_ONLY_PROVIDERS: ProviderStatus[] = [
   {
@@ -297,4 +297,120 @@ test('buildAutoConfigPlan includes APInex free and paid models when APInex is ac
   });
   assert.ok(litePlan.items.every((i) => i.nextConfig.providerId === 'apinex'));
   assert.ok(litePlan.items.every((i) => i.costClass === 'free'));
+});
+
+test('V-01: buildAutoConfigPlan memfilter model yang ditolak modelPolicy server dan memberi peringatan jika mengubah rekomendasi', () => {
+  const openRouterOnlyRestricted: ProviderStatus[] = [
+    ...MOCK_ONLY_PROVIDERS,
+    {
+      id: 'openrouter',
+      name: 'OpenRouter',
+      keyDetected: true,
+      available: true,
+      tested: false,
+      statusNote: 'ok',
+      capabilities: { jsonSchema: true, jsonObject: true, search: true, video: false, image: true },
+      modelPolicy: {
+        restricted: true,
+        explicit: false,
+        allowlist: ['meta-llama/llama-3.3-70b:free'],
+        allowFreeModels: true,
+      },
+    },
+  ];
+
+  const restrictedPlan = buildAutoConfigPlan({
+    tier: 'max',
+    currentConfigs: DEFAULT_MODEL_CONFIGS,
+    providers: openRouterOnlyRestricted,
+    catalogs: { openrouter: MIXED_CATALOGS.openrouter },
+  });
+
+  // Model berbayar harus dilewati sehingga tidak satupun agent memilih model paid
+  assert.ok(restrictedPlan.items.every((i) => i.costClass !== 'paid'));
+  assert.ok(
+    restrictedPlan.warnings.some((w) => w.includes('2 model berbayar dilewati karena pembatas server'))
+  );
+
+  // Kontrol negatif: saat restricted === false, model berbayar flagship kembali dipilih tanpa warning pembatas
+  const unrestrictedProviders = openRouterOnlyRestricted.map((p) =>
+    p.id === 'openrouter'
+      ? {
+          ...p,
+          modelPolicy: {
+            restricted: false,
+            explicit: false,
+            allowlist: [],
+            allowFreeModels: true,
+          },
+        }
+      : p
+  );
+  const unrestrictedPlan = buildAutoConfigPlan({
+    tier: 'max',
+    currentConfigs: DEFAULT_MODEL_CONFIGS,
+    providers: unrestrictedProviders,
+    catalogs: { openrouter: MIXED_CATALOGS.openrouter },
+  });
+  assert.equal(
+    unrestrictedPlan.items.find((i) => i.agentId === 'scriptwriter')?.nextConfig.model,
+    'anthropic/claude-4-opus'
+  );
+  assert.equal(
+    unrestrictedPlan.warnings.some((w) => w.includes('pembatas server')),
+    false
+  );
+});
+
+test('V-02: AUTO_CONFIG_TIERS dan alasan rekomendasi bebas klaim mutu tak terukur serta memverifikasi konteks Gemini vs katalog', () => {
+  const FORBIDDEN_CLAIMS = [
+    'tertinggi',
+    'terbaik',
+    'presisi tinggi',
+    'objektif',
+    'akurasi',
+    'terbukti',
+    'flagship terbaik',
+  ];
+
+  for (const tierMeta of AUTO_CONFIG_TIERS) {
+    const joined = `${tierMeta.title} ${tierMeta.subtitle} ${tierMeta.strategy}`.toLowerCase();
+    for (const phrase of FORBIDDEN_CLAIMS) {
+      assert.equal(joined.includes(phrase), false, `Tier "${tierMeta.id}" masih memuat "${phrase}"`);
+    }
+  }
+
+  for (const tier of ['max', 'balanced', 'lite'] as const) {
+    const plan = buildAutoConfigPlan({
+      tier,
+      currentConfigs: DEFAULT_MODEL_CONFIGS,
+      providers: MIXED_PROVIDERS,
+      catalogs: MIXED_CATALOGS,
+    });
+    const combinedPlanText = [plan.summary, ...plan.warnings].join(' ').toLowerCase();
+    for (const phrase of FORBIDDEN_CLAIMS) {
+      assert.equal(combinedPlanText.includes(phrase), false);
+    }
+    for (const item of plan.items) {
+      const itemText = `${item.reason} ${item.capabilityNote ?? ''}`.toLowerCase();
+      for (const phrase of FORBIDDEN_CLAIMS) {
+        assert.equal(
+          itemText.includes(phrase),
+          false,
+          `Agent ${item.agentId} tier ${tier} memuat "${phrase}": ${item.reason}`
+        );
+      }
+      if (item.nextConfig.providerId === 'gemini') {
+        assert.equal(item.contextVerified, false);
+        assert.equal(item.contextLength, undefined);
+      }
+      if (
+        item.nextConfig.providerId === 'openrouter' &&
+        item.nextConfig.model === 'anthropic/claude-4-opus'
+      ) {
+        assert.equal(item.contextVerified, true);
+        assert.equal(item.contextLength, 200_000);
+      }
+    }
+  }
 });

@@ -21,6 +21,7 @@ import {
   type StyleProfile,
   type StyleReference,
 } from '../../shared/schemas';
+import { label } from '../config/labels';
 
 export const STORAGE_KEY = 'faceless_studio_state_v1';
 export const CORRUPT_BACKUP_KEY = 'faceless_studio_state_corrupt_backup_v1';
@@ -372,25 +373,44 @@ export function clearLocalData(): void {
   }
 }
 
-export function mergeModelConfigs(
+export interface MergeModelConfigsReport {
+  configs: AgentModelConfig[];
+  warnings: string[];
+}
+
+export function mergeModelConfigsWithReport(
   saved: AgentModelConfig[] | undefined,
   defaults: AgentModelConfig[]
-): AgentModelConfig[] {
+): MergeModelConfigsReport {
   if (!saved || saved.length === 0) {
-    return structuredClone(defaults);
+    return { configs: structuredClone(defaults), warnings: [] };
   }
   const byAgent = new Map(saved.map((c) => [c.agentId, c]));
-  return defaults.map((def) => {
+  const warnings: string[] = [];
+  const configs = defaults.map((def) => {
     const existing = byAgent.get(def.agentId);
     if (!existing) {
       return structuredClone(def);
     }
     const cloned = structuredClone(existing);
-    if (cloned.agentId === 'orchestrator' && cloned.timeoutMs === 60000 && def.timeoutMs > 60000) {
+    if (cloned.timeoutMs <= 60000 && def.timeoutMs > cloned.timeoutMs) {
       cloned.timeoutMs = def.timeoutMs;
+      warnings.push(
+        `Timeout agent ${label(cloned.agentId)} (${cloned.agentId}) dinaikkan ke ${Math.round(
+          def.timeoutMs / 1000
+        )} detik.`
+      );
     }
     return cloned;
   });
+  return { configs, warnings };
+}
+
+export function mergeModelConfigs(
+  saved: AgentModelConfig[] | undefined,
+  defaults: AgentModelConfig[]
+): AgentModelConfig[] {
+  return mergeModelConfigsWithReport(saved, defaults).configs;
 }
 
 export function mergeKnowledgeBlocks(

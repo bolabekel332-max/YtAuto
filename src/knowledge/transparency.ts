@@ -1,4 +1,5 @@
 import { AGENTS } from '../../shared/agentRegistry';
+import { PROVIDER_CAPABILITIES, PROVIDER_IDS } from '../../shared/constants';
 import type {
   AgentId,
   AgentModelConfig,
@@ -44,7 +45,19 @@ const ORDERED_AGENT_IDS: AgentId[] = [
   'style_analyst',
 ];
 
-const SEARCH_CAPABLE_PROVIDERS = new Set<ProviderId>(['gemini', 'openrouter', 'apinex']);
+export function getSearchCapableProviders(
+  capabilities: Record<ProviderId, { search: boolean }> = PROVIDER_CAPABILITIES
+): Set<ProviderId> {
+  const capable = new Set<ProviderId>();
+  for (const pid of PROVIDER_IDS) {
+    if (capabilities[pid]?.search) {
+      capable.add(pid);
+    }
+  }
+  return capable;
+}
+
+export const SEARCH_CAPABLE_PROVIDERS: ReadonlySet<ProviderId> = getSearchCapableProviders();
 
 function describeUserInputs(agentId: AgentId): string[] {
   const agent = AGENTS[agentId];
@@ -92,7 +105,8 @@ function describeUserInputs(agentId: AgentId): string[] {
 
 function evaluateSearchStatus(
   agentId: AgentId,
-  cfg: AgentModelConfig | undefined
+  cfg: AgentModelConfig | undefined,
+  searchCapable: ReadonlySet<ProviderId>
 ): { status: SearchGroundingStatus; detail: string } {
   const agent = AGENTS[agentId];
   if (!agent.useSearch) {
@@ -109,7 +123,7 @@ function evaluateSearchStatus(
     };
   }
 
-  if (!SEARCH_CAPABLE_PROVIDERS.has(cfg.providerId)) {
+  if (!searchCapable.has(cfg.providerId)) {
     return {
       status: 'unsupported',
       detail: `Provider aktif (${label(cfg.providerId)}) tidak mendukung pencarian web server (grounding nonaktif).`,
@@ -128,7 +142,9 @@ function evaluateSearchStatus(
       ? 'Google Search Grounding'
       : cfg.providerId === 'apinex'
       ? 'APInex Web Search'
-      : 'OpenRouter Web Search';
+      : cfg.providerId === 'openrouter'
+      ? 'OpenRouter Web Search'
+      : `${label(cfg.providerId)} Web Search`;
   const modeLabel = cfg.searchMode === 'two_step' ? 'dua langkah' : 'satu langkah';
   return {
     status: 'active',
@@ -138,8 +154,10 @@ function evaluateSearchStatus(
 
 export function buildKnowledgeTransparencyReport(
   blocks: KnowledgeBlock[],
-  modelConfigs: AgentModelConfig[]
+  modelConfigs: AgentModelConfig[],
+  capabilities: Record<ProviderId, { search: boolean }> = PROVIDER_CAPABILITIES
 ): KnowledgeTransparencyReport {
+  const searchCapable = getSearchCapableProviders(capabilities);
   const configMap = new Map<AgentId, AgentModelConfig>();
   for (const cfg of modelConfigs) {
     configMap.set(cfg.agentId, cfg);
@@ -151,7 +169,7 @@ export function buildKnowledgeTransparencyReport(
     const injectedBlocks = blocks.filter(
       (b) => agent.knowledgeIds.includes(b.id) || agent.knowledgeGroups.includes(b.group)
     );
-    const searchEval = evaluateSearchStatus(agentId, cfg);
+    const searchEval = evaluateSearchStatus(agentId, cfg, searchCapable);
 
     return {
       agentId,
@@ -169,6 +187,11 @@ export function buildKnowledgeTransparencyReport(
     .filter((a) => a.searchStatus === 'active')
     .map((a) => a.agentName);
 
+  const capableProviderNames = Array.from(searchCapable).map((pid) => label(pid));
+  const unsupportedProviderNames = PROVIDER_IDS.filter((pid) => !searchCapable.has(pid)).map(
+    (pid) => label(pid)
+  );
+
   const externalSources: ExternalSourceSummaryItem[] = [
     {
       id: 'industry_reports',
@@ -180,14 +203,13 @@ export function buildKnowledgeTransparencyReport(
     },
     {
       id: 'web_search',
-      name: 'Pencarian Web Server (Google / OpenRouter / APInex Search)',
+      name: `Pencarian Web Server (${capableProviderNames.join(' / ') || 'Tidak Ada'})`,
       status: activeSearchAgents.length > 0 ? 'active' : 'conditional',
       statusLabel:
         activeSearchAgents.length > 0
           ? `Aktif di ${activeSearchAgents.join(' & ')}`
           : 'Nonaktif / Mode Simulasi',
-      description:
-        'Hanya digunakan oleh Periset dan Kepatuhan bila Search diaktifkan di Pengaturan Model dengan provider Gemini, OpenRouter, atau APInex (bukan Mock/Nous/Custom).',
+      description: `Hanya digunakan oleh Periset dan Kepatuhan bila Search diaktifkan di Pengaturan Model dengan provider berkapabilitas pencarian (${capableProviderNames.join(', ')}; bukan ${unsupportedProviderNames.join('/')}).`,
     },
     {
       id: 'trends_api',

@@ -13,9 +13,11 @@ import {
   MAX_IMPORT_BYTES,
   mergeKnowledgeBlocks,
   mergeModelConfigs,
+  mergeModelConfigsWithReport,
   save,
   STORAGE_KEY,
 } from './persistence';
+import { buildInitialState } from './store';
 import { safeExternalUrl } from '../utils/safeUrl';
 
 function createMockStorage() {
@@ -105,11 +107,18 @@ test('mergeModelConfigs dan mergeKnowledgeBlocks mempertahankan suntingan user s
   assert.equal(mergedConfigs[0].timeoutMs, 120000);
   assert.equal(mergedConfigs[1].agentId, DEFAULT_MODEL_CONFIGS[1].agentId);
 
-  const customTimeoutMerged = mergeModelConfigs(
+  // V-07: timeout <= 60000 pada agent dengan default > 60000 ikut ditingkatkan; > 60000 dipertahankan
+  const upgradedBelowThreshold = mergeModelConfigs(
     [{ ...DEFAULT_MODEL_CONFIGS[0], timeoutMs: 45000 }],
     DEFAULT_MODEL_CONFIGS
   );
-  assert.equal(customTimeoutMerged[0].timeoutMs, 45000);
+  assert.equal(upgradedBelowThreshold[0].timeoutMs, DEFAULT_MODEL_CONFIGS[0].timeoutMs);
+
+  const preservedAboveThreshold = mergeModelConfigs(
+    [{ ...DEFAULT_MODEL_CONFIGS[0], timeoutMs: 90000 }],
+    DEFAULT_MODEL_CONFIGS
+  );
+  assert.equal(preservedAboveThreshold[0].timeoutMs, 90000);
 
   const editedBlock = {
     ...DEFAULT_KNOWLEDGE[0],
@@ -415,4 +424,61 @@ test('R3-18c: compliance notes 5000 char + 35 issues dinormalkan saat save/expor
     assert.ok(storage.getItem(STORAGE_KEY));
   });
 });
+
+test('V-07: seluruh agent <= 60 detik dinaikkan ke default, nilai custom > 60 detik utuh, dan peringatan hanya muncul sekali saat reload', () => {
+  const legacySaved = DEFAULT_MODEL_CONFIGS.map((cfg) => {
+    if (cfg.agentId === 'orchestrator' || cfg.agentId === 'scriptwriter' || cfg.agentId === 'compliance') {
+      return { ...cfg, timeoutMs: 60000 };
+    }
+    if (cfg.agentId === 'visual') {
+      return { ...cfg, timeoutMs: 95000 }; // kustom > 60 detik harus tetap utuh
+    }
+    return { ...cfg, timeoutMs: 45000 };
+  });
+
+  const report = mergeModelConfigsWithReport(legacySaved, DEFAULT_MODEL_CONFIGS);
+  const byId = new Map(report.configs.map((c) => [c.agentId, c]));
+  const defById = new Map(DEFAULT_MODEL_CONFIGS.map((c) => [c.agentId, c]));
+
+  for (const [id, def] of defById) {
+    if (id === 'visual') {
+      assert.equal(byId.get(id)?.timeoutMs, 95000, 'Timeout kustom > 60 detik tidak boleh ditimpa');
+    } else if (def.timeoutMs > 60000) {
+      assert.equal(byId.get(id)?.timeoutMs, def.timeoutMs, `Agent ${id} harus naik ke default`);
+    }
+  }
+  assert.ok(report.warnings.some((w) => w.includes('(scriptwriter)')));
+  assert.ok(report.warnings.some((w) => w.includes('(orchestrator)')));
+  assert.equal(report.warnings.some((w) => w.includes('(visual)')), false);
+
+  // Verifikasi perilaku reload satu kali lewat buildInitialState() + localStorage
+  withMockWindowStorage((storage) => {
+    storage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        profile: SAMPLE_PROFILE_FOR_TEST,
+        profileConfigured: true,
+        styleProfiles: [],
+        styleReferences: [],
+        modelConfigs: legacySaved,
+        knowledge: DEFAULT_KNOWLEDGE,
+        history: [],
+        activeRun: null,
+        changesSinceExport: 0,
+      })
+    );
+
+    const firstBoot = buildInitialState();
+    assert.ok(firstBoot.storageWarning?.includes('Timeout agent'));
+    assert.ok(firstBoot.storageWarning?.includes('dinaikkan ke'));
+
+    const secondBoot = buildInitialState();
+    assert.equal(
+      secondBoot.storageWarning,
+      undefined,
+      'Peringatan migrasi timeout tidak boleh muncul lagi setelah sudah tersimpan pada reload berikutnya'
+    );
+  });
+});
+
 

@@ -59,12 +59,14 @@ import {
   type AutoConfigPlan,
   type AutoConfigTier,
 } from '../../config/modelAutoConfig';
+import { evaluateModelPolicy } from '../../../shared/modelPolicy';
 import {
   defaultModelForProvider,
   detectModelPreset,
   MODEL_PRESETS,
   RECOMMENDED_AGENT_SETTINGS,
 } from '../../state/defaults';
+import { checkConfigAgainstServerPolicy } from '../../state/modelPolicyGuard';
 import { useStore } from '../../state/store';
 import { safeExternalUrl } from '../../utils/safeUrl';
 import { AutoConfigModal } from '../components/AutoConfigModal';
@@ -366,6 +368,22 @@ export const ModelSettings: React.FC = () => {
     setTestingAgentId(cfg.agentId);
     setAgentTestErrors((prev) => ({ ...prev, [cfg.agentId]: undefined }));
     try {
+      const catalogFreeMap: Partial<Record<ProviderId, string[]>> = {};
+      for (const cid of CATALOG_PROVIDER_IDS) {
+        const list = providerCatalogs[cid]?.models;
+        if (list) {
+          catalogFreeMap[cid] = list.filter((m) => m.isFree).map((m) => m.id);
+        }
+      }
+      const guard = await checkConfigAgainstServerPolicy(cfg, catalogFreeMap);
+      if (!guard.ok) {
+        setAgentTestErrors((prev) => ({
+          ...prev,
+          [cfg.agentId]: guard.message,
+        }));
+        return;
+      }
+
       const result = await testAgent({
         agentId: cfg.agentId,
         mode: 'default',
@@ -998,11 +1016,40 @@ export const ModelSettings: React.FC = () => {
           const supportsSearch =
             cfg.agentId === 'researcher' || cfg.agentId === 'compliance';
           const providerInfo = statusData?.providers.find((p) => p.id === cfg.providerId);
+          const freeCatalogIds = isCatalogProvider(cfg.providerId)
+            ? providerCatalogs[cfg.providerId]?.models
+                .filter((m) => m.isFree)
+                .map((m) => m.id)
+            : undefined;
           const agentWarnings: string[] = [];
           if (providerInfo && !providerInfo.available) {
             agentWarnings.push(
               `Provider ${providerInfo.name} belum tersedia di server (${providerInfo.statusNote}). Ubah provider atau lengkapi environment server.`
             );
+          }
+          if (providerInfo?.modelPolicy) {
+            const modelsToVerify = Array.from(
+              new Set([cfg.model, ...cfg.fallbackModels].filter((m) => m.trim().length > 0))
+            );
+            for (const candidateModel of modelsToVerify) {
+              const policyEval = evaluateModelPolicy(
+                providerInfo.modelPolicy,
+                cfg.providerId,
+                candidateModel,
+                freeCatalogIds
+              );
+              if (!policyEval.allowed) {
+                const allowedText =
+                  policyEval.allowlist.length > 0
+                    ? policyEval.allowlist.join(', ')
+                    : providerInfo.modelPolicy.allowFreeModels
+                    ? 'model gratis (:free / free/*)'
+                    : 'lihat kebijakan server';
+                agentWarnings.push(
+                  `Model ini akan ditolak server pada konfigurasi sekarang ("${candidateModel}" tidak diizinkan). Model diizinkan: ${allowedText}.`
+                );
+              }
+            }
           }
           if (supportsSearch && cfg.useSearch && providerInfo && !providerInfo.capabilities.search) {
             agentWarnings.push(

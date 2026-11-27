@@ -12,6 +12,17 @@ export const DEFAULT_APINEX_MODEL = 'free/gemini-4-hydrogen';
 export const DEFAULT_CUSTOM_MODEL = 'default-model';
 
 /**
+ * Model gratis bawaan per provider untuk auto-fallback internal saat upstream HTTP 402.
+ * Catatan: pemilihan internal ini berjalan saat retry/fallback 402 dan tidak divalidasi ulang
+ * terhadap allowlist model eksplisit per provider; matikan via AUTO_FREE_FALLBACK=false bila perlu.
+ */
+export const AUTO_FREE_FALLBACK_MODELS = {
+  apinex: 'free/gemini-4-hydrogen',
+  openrouter: 'nvidia/nemotron-3-ultra-550b-a55b:free',
+  nous: 'qwen/qwen4-max:free',
+} as const;
+
+/**
  * Nilai temperature usulan dari BP 7.5 sebagai panduan referensi di Pengaturan Model.
  * Untuk Gemini nilai awal tetap null (menggunakan bawaan model).
  */

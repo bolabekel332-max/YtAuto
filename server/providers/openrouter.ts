@@ -53,6 +53,250 @@ function extractTextFromChoice(
   return '';
 }
 
+export async function callOpenRouterChat(
+  req: LLMRequest,
+  model: string,
+  fetchFn: typeof fetch = fetch
+): Promise<LLMResponse> {
+  const apiKey = getEnv().openrouterApiKey;
+  if (!apiKey) {
+    throw new ProviderCallError(
+      'capability_missing',
+      400,
+      'OPENROUTER_API_KEY belum terkonfigurasi di server.',
+      false
+    );
+  }
+
+  const userContentParts: Array<Record<string, unknown>> = [];
+  if (req.media && req.media.length > 0) {
+    for (const item of req.media) {
+      if (item.type === 'youtube_url') {
+        throw new ProviderCallError(
+          'capability_missing',
+          400,
+          'Adapter OpenRouter tidak mendukung analisis langsung URL YouTube. Gunakan Gemini atau unggah file video/screenshot.',
+          false
+        );
+      }
+      if (item.type === 'image') {
+        const dataUrl = item.ref.startsWith('data:')
+          ? item.ref
+          : `data:${item.mime || 'image/jpeg'};base64,${item.ref}`;
+        userContentParts.push({
+          type: 'image_url',
+          image_url: { url: dataUrl },
+        });
+      }
+    }
+  }
+
+  const bodyMessages: Array<Record<string, unknown>> = [
+    { role: 'system', content: req.system },
+  ];
+
+  let lastUserIdx = -1;
+  for (let i = req.messages.length - 1; i >= 0; i -= 1) {
+    if (req.messages[i].role === 'user') {
+      lastUserIdx = i;
+      break;
+    }
+  }
+
+  req.messages.forEach((msg, idx) => {
+    if (userContentParts.length > 0 && idx === lastUserIdx) {
+      bodyMessages.push({
+        role: 'user',
+        content: [...userContentParts, { type: 'text', text: msg.content }],
+      });
+    } else {
+      bodyMessages.push({ role: msg.role, content: msg.content });
+    }
+  });
+
+  if (lastUserIdx === -1 && userContentParts.length > 0) {
+    bodyMessages.push({ role: 'user', content: userContentParts });
+  }
+
+  const payload: Record<string, unknown> = {
+    model,
+    messages: bodyMessages,
+    max_tokens: req.maxTokens,
+  };
+
+  if (req.temperature !== null) {
+    payload.temperature = req.temperature;
+  }
+
+  // Gunakan alat pencarian server OpenRouter terbaru (openrouter:web_search), bukan plugin lama
+  if (req.useSearch) {
+    payload.tools = [{ type: 'openrouter:web_search' }];
+  } else if (req.jsonMode === 'json_schema' && req.jsonSchema) {
+    payload.response_format = {
+      type: 'json_schema',
+      json_schema: {
+        name: req.schemaId,
+        strict: false,
+        schema: normalizeSchemaForOpenRouter(req.jsonSchema),
+      },
+    };
+  } else if (req.jsonMode === 'json_object') {
+    payload.response_format = { type: 'json_object' };
+  }
+
+  if (req.signal?.aborted) {
+    throw new ProviderCallError('timeout', 499, 'Permintaan ke OpenRouter dibatalkan.', false, {
+      errorKind: 'local_timeout',
+      errorName: 'AbortError',
+    });
+  }
+
+  const { signal, cleanup, isCallerAborted } = combineAbortSignals(req.signal, req.timeoutMs);
+
+  try {
+    const res = await fetchFn(OPENROUTER_CHAT_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+      signal,
+    });
+
+    if (res.status === 401) {
+      throw new ProviderCallError(
+        'provider_error',
+        502,
+        'Autentikasi OpenRouter gagal (401). Periksa OPENROUTER_API_KEY di panel Secrets server.',
+        false,
+        { errorKind: 'authentication_error', upstreamStatus: 401 }
+      );
+    }
+
+    if (res.status === 402) {
+      throw new ProviderCallError(
+        'provider_error',
+        502,
+        'Saldo atau kredit OpenRouter tidak mencukupi untuk model ini (402). Gunakan model gratis (:free) atau isi saldo akun OpenRouter.',
+        false,
+        { errorKind: 'insufficient_balance', upstreamStatus: 402 }
+      );
+    }
+
+    if (res.status === 403) {
+      throw new ProviderCallError(
+        'provider_error',
+        502,
+        'Izin akses OpenRouter ditolak (403). Periksa hak akses kunci OPENROUTER_API_KEY.',
+        false,
+        { errorKind: 'permission_error', upstreamStatus: 403 }
+      );
+    }
+
+    if (res.status === 429) {
+      throw new ProviderCallError(
+        'provider_error',
+        429,
+        'OpenRouter mengembalikan HTTP 429 (batas permintaan tercapai).',
+        true,
+        {
+          errorKind: 'rate_limit',
+          upstreamStatus: 429,
+          retryAfterMs: parseRetryAfterMs(res.headers.get('retry-after')),
+        }
+      );
+    }
+
+    if (res.status >= 500) {
+      throw new ProviderCallError(
+        'provider_error',
+        502,
+        `OpenRouter mengalami error server (HTTP ${res.status}).`,
+        true,
+        { errorKind: 'upstream_internal_error', upstreamStatus: res.status }
+      );
+    }
+
+    const rawText = await res.text();
+    let data: OpenRouterResponseBody | null = null;
+    if (rawText.trim().length > 0) {
+      try {
+        data = JSON.parse(rawText) as OpenRouterResponseBody;
+      } catch {
+        data = null;
+      }
+    }
+
+    if (!res.ok || data?.error) {
+      const snippet = sanitizeErrorMessage(data?.error?.message || rawText || 'Permintaan ditolak.', 200);
+      throw new ProviderCallError(
+        'provider_error',
+        502,
+        `OpenRouter error (${res.status}): ${snippet}`,
+        res.status >= 500,
+        { upstreamStatus: res.status, sanitizedMessage: snippet }
+      );
+    }
+
+    if (!data) {
+      const snippet = sanitizeErrorMessage(rawText, 200);
+      throw new ProviderCallError(
+        'provider_error',
+        502,
+        `Respons OpenRouter bukan JSON yang valid (HTTP ${res.status}): ${snippet || 'kosong'}`,
+        false,
+        { upstreamStatus: res.status, sanitizedMessage: snippet }
+      );
+    }
+
+    const choice = data.choices?.[0];
+    const text = extractTextFromChoice(choice?.message?.content);
+    const truncated = choice?.finish_reason === 'length';
+    const rawSources: Array<{ title: string; url: string }> = [];
+
+    for (const ann of choice?.message?.annotations ?? []) {
+      if (ann.type === 'url_citation' && ann.url_citation?.url) {
+        rawSources.push({
+          title: ann.url_citation.title || ann.url_citation.url,
+          url: ann.url_citation.url,
+        });
+      }
+    }
+
+    return {
+      text,
+      sources: sanitizeSources(rawSources),
+      tokens: data.usage?.total_tokens,
+      truncated,
+    };
+  } catch (err) {
+    if (err instanceof ProviderCallError) throw err;
+    if (isCallerAborted()) {
+      throw new ProviderCallError('timeout', 499, 'Permintaan ke OpenRouter dibatalkan.', false, {
+        errorKind: 'local_timeout',
+        errorName: 'AbortError',
+      });
+    }
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new ProviderCallError(
+        'timeout',
+        504,
+        'Permintaan ke OpenRouter melewati batas waktu (timeout).',
+        false
+      );
+    }
+    throw new ProviderCallError(
+      'provider_error',
+      502,
+      `Gagal menghubungi OpenRouter: ${sanitizeErrorMessage(err)}`,
+      false
+    );
+  } finally {
+    cleanup();
+  }
+}
+
 export const openrouterProvider: LLMProvider = {
   id: 'openrouter',
   name: 'OpenRouter (Belum Teruji)',
@@ -72,218 +316,7 @@ export const openrouterProvider: LLMProvider = {
       : 'OPENROUTER_API_KEY belum tersedia di environment server (nonaktif & belum teruji).',
 
   async generate(req: LLMRequest, model: string): Promise<LLMResponse> {
-    const apiKey = getEnv().openrouterApiKey;
-    if (!apiKey) {
-      throw new ProviderCallError(
-        'capability_missing',
-        400,
-        'OPENROUTER_API_KEY belum terkonfigurasi di server.',
-        false
-      );
-    }
-
-    const userContentParts: Array<Record<string, unknown>> = [];
-    if (req.media && req.media.length > 0) {
-      for (const item of req.media) {
-        if (item.type === 'youtube_url') {
-          throw new ProviderCallError(
-            'capability_missing',
-            400,
-            'Adapter OpenRouter tidak mendukung analisis langsung URL YouTube. Gunakan Gemini atau unggah file video/screenshot.',
-            false
-          );
-        }
-        if (item.type === 'image') {
-          const dataUrl = item.ref.startsWith('data:')
-            ? item.ref
-            : `data:${item.mime || 'image/jpeg'};base64,${item.ref}`;
-          userContentParts.push({
-            type: 'image_url',
-            image_url: { url: dataUrl },
-          });
-        }
-      }
-    }
-
-    const combinedText = req.messages.map((m) => m.content).join('\n\n');
-    const bodyMessages: Array<Record<string, unknown>> = [
-      { role: 'system', content: req.system },
-    ];
-
-    if (userContentParts.length > 0) {
-      userContentParts.push({ type: 'text', text: combinedText });
-      bodyMessages.push({ role: 'user', content: userContentParts });
-    } else {
-      bodyMessages.push({ role: 'user', content: combinedText });
-    }
-
-    const payload: Record<string, unknown> = {
-      model,
-      messages: bodyMessages,
-      max_tokens: req.maxTokens,
-    };
-
-    if (req.temperature !== null) {
-      payload.temperature = req.temperature;
-    }
-
-    // Gunakan alat pencarian server OpenRouter terbaru (openrouter:web_search), bukan plugin lama
-    if (req.useSearch) {
-      payload.tools = [{ type: 'openrouter:web_search' }];
-    } else if (req.jsonMode === 'json_schema' && req.jsonSchema) {
-      payload.response_format = {
-        type: 'json_schema',
-        json_schema: {
-          name: req.schemaId,
-          strict: false,
-          schema: normalizeSchemaForOpenRouter(req.jsonSchema),
-        },
-      };
-    } else if (req.jsonMode === 'json_object') {
-      payload.response_format = { type: 'json_object' };
-    }
-
-    if (req.signal?.aborted) {
-      throw new ProviderCallError('timeout', 499, 'Permintaan ke OpenRouter dibatalkan.', false, {
-        errorKind: 'local_timeout',
-        errorName: 'AbortError',
-      });
-    }
-
-    const { signal, cleanup, isCallerAborted } = combineAbortSignals(req.signal, req.timeoutMs);
-
-    try {
-      const res = await fetch(OPENROUTER_CHAT_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-        signal,
-      });
-
-      if (res.status === 401) {
-        throw new ProviderCallError(
-          'provider_error',
-          502,
-          'Autentikasi OpenRouter gagal (401). Periksa OPENROUTER_API_KEY di panel Secrets server.',
-          false,
-          { errorKind: 'authentication_error', upstreamStatus: 401 }
-        );
-      }
-
-      if (res.status === 403) {
-        throw new ProviderCallError(
-          'provider_error',
-          502,
-          'Izin akses OpenRouter ditolak (403). Periksa hak akses kunci OPENROUTER_API_KEY.',
-          false,
-          { errorKind: 'permission_error', upstreamStatus: 403 }
-        );
-      }
-
-      if (res.status === 429) {
-        throw new ProviderCallError(
-          'provider_error',
-          429,
-          'OpenRouter mengembalikan HTTP 429 (batas permintaan tercapai).',
-          true,
-          {
-            errorKind: 'rate_limit',
-            upstreamStatus: 429,
-            retryAfterMs: parseRetryAfterMs(res.headers.get('retry-after')),
-          }
-        );
-      }
-
-      if (res.status >= 500) {
-        throw new ProviderCallError(
-          'provider_error',
-          502,
-          `OpenRouter mengalami error server (HTTP ${res.status}).`,
-          true,
-          { errorKind: 'upstream_internal_error', upstreamStatus: res.status }
-        );
-      }
-
-      const rawText = await res.text();
-      let data: OpenRouterResponseBody | null = null;
-      if (rawText.trim().length > 0) {
-        try {
-          data = JSON.parse(rawText) as OpenRouterResponseBody;
-        } catch {
-          data = null;
-        }
-      }
-
-      if (!res.ok || data?.error) {
-        const snippet = sanitizeErrorMessage(data?.error?.message || rawText || 'Permintaan ditolak.', 200);
-        throw new ProviderCallError(
-          'provider_error',
-          502,
-          `OpenRouter error (${res.status}): ${snippet}`,
-          res.status >= 500,
-          { upstreamStatus: res.status, sanitizedMessage: snippet }
-        );
-      }
-
-      if (!data) {
-        const snippet = sanitizeErrorMessage(rawText, 200);
-        throw new ProviderCallError(
-          'provider_error',
-          502,
-          `Respons OpenRouter bukan JSON yang valid (HTTP ${res.status}): ${snippet || 'kosong'}`,
-          false,
-          { upstreamStatus: res.status, sanitizedMessage: snippet }
-        );
-      }
-
-      const choice = data.choices?.[0];
-      const text = extractTextFromChoice(choice?.message?.content);
-      const truncated = choice?.finish_reason === 'length';
-      const rawSources: Array<{ title: string; url: string }> = [];
-
-      for (const ann of choice?.message?.annotations ?? []) {
-        if (ann.type === 'url_citation' && ann.url_citation?.url) {
-          rawSources.push({
-            title: ann.url_citation.title || ann.url_citation.url,
-            url: ann.url_citation.url,
-          });
-        }
-      }
-
-      return {
-        text,
-        sources: sanitizeSources(rawSources),
-        tokens: data.usage?.total_tokens,
-        truncated,
-      };
-    } catch (err) {
-      if (err instanceof ProviderCallError) throw err;
-      if (isCallerAborted()) {
-        throw new ProviderCallError('timeout', 499, 'Permintaan ke OpenRouter dibatalkan.', false, {
-          errorKind: 'local_timeout',
-          errorName: 'AbortError',
-        });
-      }
-      if (err instanceof Error && err.name === 'AbortError') {
-        throw new ProviderCallError(
-          'timeout',
-          504,
-          'Permintaan ke OpenRouter melewati batas waktu (timeout).',
-          false
-        );
-      }
-      throw new ProviderCallError(
-        'provider_error',
-        502,
-        `Gagal menghubungi OpenRouter: ${sanitizeErrorMessage(err)}`,
-        false
-      );
-    } finally {
-      cleanup();
-    }
+    return callOpenRouterChat(req, model);
   },
 
   async testConnection(model: string): Promise<{ latencyMs: number; message: string }> {

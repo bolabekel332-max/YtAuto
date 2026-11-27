@@ -10,6 +10,7 @@ import { estimateCalls } from '../../agents/dependencies';
 import { isPipelineLocked } from '../../agents/pipeline';
 import { label } from '../../config/labels';
 import { PROFILE_OPTIONS } from '../../config/presets';
+import { checkPipelineConfigsAgainstServerPolicy } from '../../state/modelPolicyGuard';
 import { usePipeline } from '../../state/pipelineContext';
 import { useStore } from '../../state/store';
 import {
@@ -152,6 +153,18 @@ export const VideoStudio: React.FC = () => {
       return;
     }
 
+    const requiredAgents: PipelineStepId[] = includeResearch
+      ? ['researcher', 'scriptwriter', 'visual', 'packaging', 'compliance', 'orchestrator']
+      : ['scriptwriter', 'visual', 'packaging', 'compliance', 'orchestrator'];
+    const policyCheck = await checkPipelineConfigsAgainstServerPolicy(
+      state.modelConfigs,
+      requiredAgents
+    );
+    if (!policyCheck.ok) {
+      setFormError(policyCheck.message);
+      return;
+    }
+
     const input: RunInput = {
       topic: topic.trim(),
       targetPlatform,
@@ -167,6 +180,18 @@ export const VideoStudio: React.FC = () => {
     if (!activeRun || isBusy || isPipelineLocked()) return;
     setFormError(null);
     dismissPipelineError();
+    const remainingAgents: PipelineStepId[] = PIPELINE_STEP_IDS.filter((stepId) => {
+      const st = activeRun.steps[stepId].status;
+      return st !== 'done' && st !== 'skipped';
+    });
+    const policyCheck = await checkPipelineConfigsAgainstServerPolicy(
+      state.modelConfigs,
+      remainingAgents
+    );
+    if (!policyCheck.ok) {
+      setFormError(policyCheck.message);
+      return;
+    }
     await resumePipeline(activeRun);
   };
 
@@ -174,6 +199,14 @@ export const VideoStudio: React.FC = () => {
     if (!activeRun || isBusy || isPipelineLocked()) return;
     setFormError(null);
     dismissPipelineError();
+    const policyCheck = await checkPipelineConfigsAgainstServerPolicy(
+      state.modelConfigs,
+      [stepId]
+    );
+    if (!policyCheck.ok) {
+      setFormError(policyCheck.message);
+      return;
+    }
     setSelectedStep(stepId);
     await retryPipelineStep(activeRun, stepId);
   };

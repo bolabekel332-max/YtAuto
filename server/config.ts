@@ -3,6 +3,11 @@ import {
   MAX_TOKENS_LIMIT,
   PROVIDER_IDS,
 } from '../shared/constants';
+import {
+  evaluateModelPolicy,
+  isPatternFreeModel,
+  type ModelPolicyConfig,
+} from '../shared/modelPolicy';
 import type { ProviderId } from '../shared/schemas';
 import { DEFAULT_MODEL_CONFIGS, defaultModelForProvider } from '../shared/defaults';
 
@@ -120,14 +125,7 @@ export function isImplicitlyAllowedFreeModel(providerId: ProviderId, model: stri
   if (catalogFreeModels.get(providerId)?.has(trimmed)) {
     return true;
   }
-  const lower = trimmed.toLowerCase();
-  if (providerId === 'apinex') {
-    return lower.startsWith('free/');
-  }
-  if (providerId === 'openrouter' || providerId === 'nous') {
-    return lower.endsWith(':free');
-  }
-  return false;
+  return isPatternFreeModel(providerId, trimmed);
 }
 
 export function getEffectiveModelAllowlist(
@@ -161,31 +159,71 @@ export function getEffectiveModelAllowlist(
   return [];
 }
 
+export type ProviderModelPolicyEnv = Pick<
+  ServerEnv,
+  | 'host'
+  | 'geminiModelAllowlist'
+  | 'openrouterModelAllowlist'
+  | 'nousModelAllowlist'
+  | 'apinexModelAllowlist'
+>;
+
+export function getProviderModelPolicy(
+  providerId: ProviderId,
+  env: ProviderModelPolicyEnv = getEnv()
+): ModelPolicyConfig {
+  if (providerId === 'mock') {
+    return {
+      restricted: false,
+      explicit: false,
+      allowlist: [],
+      allowFreeModels: true,
+    };
+  }
+
+  const explicit = getExplicitAllowlistForProvider(providerId, env);
+  if (explicit.length > 0) {
+    return {
+      restricted: true,
+      explicit: true,
+      allowlist: explicit,
+      allowFreeModels: false,
+    };
+  }
+
+  if (isLoopbackHost(env.host)) {
+    return {
+      restricted: false,
+      explicit: false,
+      allowlist: [],
+      allowFreeModels: true,
+    };
+  }
+
+  const allowFreeModels =
+    providerId === 'apinex' || providerId === 'openrouter' || providerId === 'nous';
+  return {
+    restricted: true,
+    explicit: false,
+    allowlist: getEffectiveModelAllowlist(providerId, env),
+    allowFreeModels,
+  };
+}
+
 export function isModelAllowedByServer(
   providerId: ProviderId,
   model: string,
-  env: Pick<
-    ServerEnv,
-    | 'host'
-    | 'geminiModelAllowlist'
-    | 'openrouterModelAllowlist'
-    | 'nousModelAllowlist'
-    | 'apinexModelAllowlist'
-  > = getEnv()
+  env: ProviderModelPolicyEnv = getEnv()
 ): { allowed: boolean; allowlist: string[] } {
-  if (providerId === 'mock') {
-    return { allowed: true, allowlist: [] };
-  }
-  const explicit = getExplicitAllowlistForProvider(providerId, env);
-  if (explicit.length > 0) {
-    return { allowed: explicit.includes(model), allowlist: explicit };
-  }
-  if (isLoopbackHost(env.host)) {
-    return { allowed: true, allowlist: [] };
-  }
-  const allowlist = getEffectiveModelAllowlist(providerId, env);
-  const allowed = allowlist.includes(model) || isImplicitlyAllowedFreeModel(providerId, model);
-  return { allowed, allowlist };
+  const policy = getProviderModelPolicy(providerId, env);
+  const catalogFree = catalogFreeModels.get(providerId);
+  const res = evaluateModelPolicy(
+    policy,
+    providerId,
+    model,
+    catalogFree ? Array.from(catalogFree) : undefined
+  );
+  return { allowed: res.allowed, allowlist: res.allowlist };
 }
 
 function parsePositiveInt(raw: string | undefined, fallback: number): number {

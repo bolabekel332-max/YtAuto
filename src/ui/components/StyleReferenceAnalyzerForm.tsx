@@ -24,8 +24,9 @@ import type {
   StyleReference,
   StyleReferenceType,
 } from '../../../shared/schemas';
-import { analyzeStyle } from '../../api/client';
 import { label } from '../../config/labels';
+import { useAgentTask } from '../../state/agentTaskContext';
+import { checkConfigAgainstServerPolicy } from '../../state/modelPolicyGuard';
 import { useStore } from '../../state/store';
 import {
   estimateAnalyzePayloadBytes,
@@ -50,7 +51,9 @@ export const StyleReferenceAnalyzerForm: React.FC<StyleReferenceAnalyzerFormProp
   initialType = 'description',
   compact = false,
 }) => {
-  const { state, dispatch } = useStore();
+  const { state } = useStore();
+  const { tasks, startStyleAnalysisTask, cancelTask, clearTaskMessages } = useAgentTask();
+  const styleTask = tasks.style_analysis;
   const baseId = useId();
   const ytInputId = `${baseId}-yt-url`;
   const videoInputId = `${baseId}-video-upload`;
@@ -66,11 +69,16 @@ export const StyleReferenceAnalyzerForm: React.FC<StyleReferenceAnalyzerFormProp
   const [imageFiles, setImageFiles] = useState<File[]>([]);
   const [progress, setProgress] = useState<ExtractionProgress | null>(null);
   const [localMetricsPreview, setLocalMetricsPreview] = useState<LocalVisualMetrics | null>(null);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [localExtracting, setLocalExtracting] = useState(false);
+  const [localErrorMsg, setLocalErrorMsg] = useState<string | null>(null);
+  const [localSuccessMsg, setLocalSuccessMsg] = useState<string | null>(null);
 
-  const abortRef = useRef<AbortController | null>(null);
+  const localExtractAbortRef = useRef<AbortController | null>(null);
+  const extractingActiveRef = useRef(false);
+
+  const analyzing = localExtracting || styleTask.status === 'running';
+  const errorMsg = localErrorMsg ?? styleTask.error ?? null;
+  const successMsg = localSuccessMsg ?? styleTask.statusMessage ?? null;
 
   const styleConfig =
     state.modelConfigs.find((c) => c.agentId === 'style_analyst') ??
@@ -83,36 +91,54 @@ export const StyleReferenceAnalyzerForm: React.FC<StyleReferenceAnalyzerFormProp
   const activeRefCount = state.styleReferences.filter((r) => r.status !== 'failed').length;
   const canAddMoreRefs = activeRefCount < MAX_REFERENCES;
 
+  // Pembatalan otomatis saat unmount hanya berlaku untuk ekstraksi frame lokal browser;
+  // panggilan analyzeStyle di server tetap berjalan di AgentTaskProvider agar hasil tersimpan.
   useEffect(() => {
     return () => {
-      abortRef.current?.abort();
+      if (extractingActiveRef.current) {
+        localExtractAbortRef.current?.abort();
+      }
     };
   }, []);
 
   const handleCancelExtraction = () => {
-    abortRef.current?.abort();
+    if (extractingActiveRef.current) {
+      localExtractAbortRef.current?.abort();
+    }
+    if (styleTask.status === 'running') {
+      cancelTask('style_analysis');
+    }
   };
 
   const handleAnalyzeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setErrorMsg(null);
-    setSuccessMsg(null);
+    if (analyzing) return;
+
+    setLocalErrorMsg(null);
+    setLocalSuccessMsg(null);
+    clearTaskMessages('style_analysis');
     setLocalMetricsPreview(null);
 
     if (!canAddMoreRefs) {
-      setErrorMsg(
+      setLocalErrorMsg(
         `Maksimal ${MAX_REFERENCES} referensi tersimpan. Hapus salah satu referensi lama di halaman Referensi Gaya terlebih dahulu.`
       );
       return;
     }
 
+    const preGuard = await checkConfigAgainstServerPolicy(styleConfig);
+    if (!preGuard.ok) {
+      setLocalErrorMsg(preGuard.message);
+      return;
+    }
+
     const refId = `ref_${Date.now()}`;
     let sourceLabel = '';
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    setAnalyzing(true);
+    const extractController = new AbortController();
+    localExtractAbortRef.current = extractController;
+    extractingActiveRef.current = true;
+    setLocalExtracting(true);
     try {
       let payloadRef: {
         referenceId: string;
@@ -174,7 +200,7 @@ export const StyleReferenceAnalyzerForm: React.FC<StyleReferenceAnalyzerFormProp
           percent: 30,
           message: `Mengubah ukuran ${imageFiles.length} gambar di browser (maks 768 px)...`,
         });
-        const resized = await resizeUploadedImages(imageFiles, controller.signal);
+        const resized = await resizeUploadedImages(imageFiles, extractController.signal);
         sourceLabel = `${imageFiles.length} gambar (${imageFiles[0].name})`;
         payloadRef = {
           referenceId: refId,
@@ -192,11 +218,11 @@ export const StyleReferenceAnalyzerForm: React.FC<StyleReferenceAnalyzerFormProp
         }
         sourceLabel = `${videoFile.name} (${(videoFile.size / (1024 * 1024)).toFixed(1)} MB)`;
 
-        const denseRes = await extractDenseThumbs(videoFile, setProgress, controller.signal);
+        const denseRes = await extractDenseThumbs(videoFile, setProgress, extractController.signal);
         const metrics = computeMetrics(denseRes.thumbs);
         setLocalMetricsPreview(metrics);
 
-        const keyFrames = await extractKeyFrames(videoFile, setProgress, controller.signal);
+        const keyFrames = await extractKeyFrames(videoFile, setProgress, extractController.signal);
         let framesPayload: Array<{ mimeType: 'image/jpeg' | 'image/png' | 'image/webp'; data: string }> =
           keyFrames.map((f) => ({
             mimeType: f.mimeType,
@@ -243,6 +269,11 @@ export const StyleReferenceAnalyzerForm: React.FC<StyleReferenceAnalyzerFormProp
         payloadRef = candidate;
       }
 
+      extractingActiveRef.current = false;
+      localExtractAbortRef.current = null;
+      setLocalExtracting(false);
+      setProgress(null);
+
       const newRef: StyleReference = {
         id: refId,
         type: refType,
@@ -250,61 +281,38 @@ export const StyleReferenceAnalyzerForm: React.FC<StyleReferenceAnalyzerFormProp
         note: note.trim() || undefined,
         status: 'new',
       };
-      dispatch({ type: 'ADD_STYLE_REFERENCE', reference: newRef });
 
-      try {
-        setProgress({
-          phase: 'done',
-          percent: 100,
-          message: 'Mengirim fitur ringkas ke server untuk ekstraksi atribut gaya...',
-        });
-        const response = await analyzeStyle(
-          {
-            reference: payloadRef,
-            profile: state.profile,
-            knowledge: state.knowledge,
-            config: styleConfig,
-          },
-          controller.signal
-        );
+      const startRes = await startStyleAnalysisTask({
+        payload: {
+          reference: payloadRef,
+          profile: state.profile,
+          knowledge: state.knowledge,
+          config: styleConfig,
+        },
+        newReference: newRef,
+        onProfileCreated,
+      });
 
-        dispatch({ type: 'UPDATE_STYLE_REFERENCE', id: refId, patch: { status: 'analyzed' } });
-        dispatch({ type: 'UPSERT_STYLE_PROFILE', profile: response.profile });
-        onProfileCreated?.(response.profile);
-
-        setSuccessMsg(
-          `Profil gaya "${response.profile.name}" berhasil dibuat${
-            response.result.isMock ? ' (Simulasi Mock)' : ''
-          }.`
-        );
+      if (startRes.started) {
         setYoutubeUrl('');
         setDescriptionText('');
         setNote('');
         setVideoFile(null);
         setImageFiles([]);
-      } catch (apiErr) {
-        if (
-          controller.signal.aborted ||
-          (apiErr instanceof DOMException && apiErr.name === 'AbortError')
-        ) {
-          dispatch({ type: 'REMOVE_STYLE_REFERENCE', id: refId });
-        } else {
-          dispatch({ type: 'UPDATE_STYLE_REFERENCE', id: refId, patch: { status: 'failed' } });
-        }
-        throw apiErr;
       }
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
-        setSuccessMsg('Analisis gaya dibatalkan oleh pengguna.');
+        setLocalSuccessMsg('Ekstraksi referensi gaya dibatalkan oleh pengguna.');
       } else {
-        setErrorMsg(
+        setLocalErrorMsg(
           err instanceof Error ? err.message : 'Gagal menganalisis referensi gaya.'
         );
       }
     } finally {
-      setAnalyzing(false);
+      extractingActiveRef.current = false;
+      setLocalExtracting(false);
       setProgress(null);
-      abortRef.current = null;
+      localExtractAbortRef.current = null;
     }
   };
 
@@ -340,7 +348,8 @@ export const StyleReferenceAnalyzerForm: React.FC<StyleReferenceAnalyzerFormProp
                 disabled={analyzing}
                 onClick={() => {
                   setRefType(item.id);
-                  setErrorMsg(null);
+                  setLocalErrorMsg(null);
+                  clearTaskMessages('style_analysis');
                 }}
                 className={`flex items-start gap-2.5 rounded-xl border p-3 text-left transition-colors ${
                   active

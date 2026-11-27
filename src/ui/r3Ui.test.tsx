@@ -8,6 +8,7 @@ import { FIXTURES } from '../../server/providers/mockFixtures';
 import { ExportFileSchema, type ChannelProfile, type StyleAttributes } from '../../shared/schemas';
 import { isPipelineLocked, runPipeline } from '../agents/pipeline';
 import { DEFAULT_KNOWLEDGE } from '../knowledge/blocks';
+import { AgentTaskProvider } from '../state/agentTaskContext';
 import { createDefaultModelConfigs } from '../state/defaults';
 import { PipelineProvider } from '../state/pipelineContext';
 import {
@@ -356,7 +357,11 @@ test('R3-16 & N3-02: StyleReferenceAnalyzerForm menonaktifkan submit pada upload
     React.createElement(
       StoreProvider,
       null,
-      React.createElement(StyleReferenceAnalyzerForm, { initialType: 'description' })
+      React.createElement(
+        AgentTaskProvider,
+        null,
+        React.createElement(StyleReferenceAnalyzerForm, { initialType: 'description' })
+      )
     ),
     {
       [STORAGE_KEY]: JSON.stringify({
@@ -392,7 +397,11 @@ test('R3-16 & N3-02: StyleReferenceAnalyzerForm menonaktifkan submit pada upload
     React.createElement(
       StoreProvider,
       null,
-      React.createElement(StyleReferenceAnalyzerForm, { initialType: 'upload_video' })
+      React.createElement(
+        AgentTaskProvider,
+        null,
+        React.createElement(StyleReferenceAnalyzerForm, { initialType: 'upload_video' })
+      )
     ),
     {
       [STORAGE_KEY]: JSON.stringify({
@@ -849,7 +858,11 @@ test('SetupChannel menampilkan peringatan perubahan belum disimpan dan Ideas ser
     React.createElement(
       StoreProvider,
       null,
-      React.createElement(PipelineProvider, null, React.createElement(ProfileSyncHost))
+      React.createElement(
+        AgentTaskProvider,
+        null,
+        React.createElement(PipelineProvider, null, React.createElement(ProfileSyncHost))
+      )
     )
   );
   try {

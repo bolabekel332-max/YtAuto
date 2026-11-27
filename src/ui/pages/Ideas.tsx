@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Lightbulb, Loader2, Sparkles, XCircle } from 'lucide-react';
 import type { Platform } from '../../../shared/schemas';
-import { runAgent } from '../../api/client';
 import { label } from '../../config/labels';
 import { PROFILE_OPTIONS } from '../../config/presets';
+import { useAgentTask } from '../../state/agentTaskContext';
 import { useStore } from '../../state/store';
 import { ActiveChannelSummary } from '../components/ActiveChannelSummary';
 import { Card } from '../components/Card';
@@ -13,15 +13,17 @@ import { AgentOutput } from '../renderers/AgentOutput';
 
 export const Ideas: React.FC = () => {
   const { state, dispatch } = useStore();
+  const { tasks, startIdeasTask, cancelTask, clearTaskMessages } = useAgentTask();
+  const ideasTask = tasks.ideas;
+  const loading = ideasTask.status === 'running';
+  const errorMsg = ideasTask.error ?? null;
+  const statusMsg = ideasTask.statusMessage ?? null;
+
   const [targetPlatform, setTargetPlatform] = useState<Platform>(
     state.profile.platform ?? 'youtube_shorts'
   );
   const [topic, setTopic] = useState('');
   const [existingIdeasText, setExistingIdeasText] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [statusMsg, setStatusMsg] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
   const prevProfilePlatformRef = useRef<Platform>(state.profile.platform ?? 'youtube_shorts');
 
   useEffect(() => {
@@ -32,59 +34,31 @@ export const Ideas: React.FC = () => {
     }
   }, [state.profile.platform]);
 
-  useEffect(() => {
-    return () => {
-      abortRef.current?.abort();
-    };
-  }, []);
-
   const researcherConfig =
     state.modelConfigs.find((c) => c.agentId === 'researcher') ??
     state.modelConfigs[0];
 
   const handleRunResearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    setErrorMsg(null);
-    setStatusMsg(null);
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setLoading(true);
-    try {
-      const existingIdeas = existingIdeasText
-        .split('\n')
-        .map((line) => line.trim())
-        .filter(Boolean);
+    clearTaskMessages('ideas');
+    const existingIdeas = existingIdeasText
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
 
-      const result = await runAgent(
-        {
-          agentId: 'researcher',
-          mode: 'default',
-          input: {
-            targetPlatform,
-            topic: topic.trim() || undefined,
-            profile: state.profile,
-            existingIdeas: existingIdeas.length > 0 ? existingIdeas : undefined,
-          },
-          profile: state.profile,
-          knowledge: state.knowledge,
-          config: researcherConfig,
-        },
-        controller.signal
-      );
-
-      dispatch({ type: 'SET_LAST_IDEAS', result });
-    } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        setStatusMsg('Permintaan riset ide dibatalkan oleh pengguna.');
-      } else {
-        setErrorMsg(
-          err instanceof Error ? err.message : 'Gagal menjalankan agent Periset.'
-        );
-      }
-    } finally {
-      abortRef.current = null;
-      setLoading(false);
-    }
+    await startIdeasTask({
+      agentId: 'researcher',
+      mode: 'default',
+      input: {
+        targetPlatform,
+        topic: topic.trim() || undefined,
+        profile: state.profile,
+        existingIdeas: existingIdeas.length > 0 ? existingIdeas : undefined,
+      },
+      profile: state.profile,
+      knowledge: state.knowledge,
+      config: researcherConfig,
+    });
   };
 
   const handleSendToStudio = (ideaTitle: string) => {
@@ -202,7 +176,7 @@ export const Ideas: React.FC = () => {
               {loading && (
                 <button
                   type="button"
-                  onClick={() => abortRef.current?.abort()}
+                  onClick={() => cancelTask('ideas')}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-950/50 px-3 py-2 text-xs font-medium text-rose-200 hover:bg-rose-950/80"
                 >
                   <XCircle className="h-4 w-4" aria-hidden="true" />

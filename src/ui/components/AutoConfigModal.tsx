@@ -29,8 +29,8 @@ function formatCostLabel(item: AgentAutoRecommendation): string {
   return map[item.costClass];
 }
 
-function formatContext(ctx?: number): string | null {
-  if (!ctx || ctx <= 0) return null;
+function formatContext(ctx?: number, verified?: boolean): string {
+  if (!verified || !ctx || ctx <= 0) return 'konteks tidak diverifikasi';
   if (ctx >= 1_000_000) return `${(ctx / 1_000_000).toFixed(1).replace(/\.0$/, '')}M ctx`;
   return `${Math.round(ctx / 1000)}K ctx`;
 }
@@ -119,8 +119,11 @@ export const AutoConfigModal: React.FC<AutoConfigModalProps> = ({
           </button>
         </div>
 
-        {/* Peringatan & Toolbar Pilihan */}
+        {/* Peringatan, Disclaimer & Toolbar Pilihan */}
         <div className="space-y-3 border-b border-slate-800/80 px-4 py-3 sm:px-5">
+          <p className="rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-[11px] text-slate-300">
+            Peringkat kemampuan diperkirakan dari nama model dan harga katalog; bukan hasil benchmark.
+          </p>
           {plan.warnings.length > 0 && (
             <div
               role="alert"
@@ -176,7 +179,7 @@ export const AutoConfigModal: React.FC<AutoConfigModalProps> = ({
               <tbody className="divide-y divide-slate-800/80">
                 {plan.items.map((item) => {
                   const checked = Boolean(selectedMap[item.agentId]);
-                  const ctxLabel = formatContext(item.contextLength);
+                  const ctxLabel = formatContext(item.contextLength, item.contextVerified);
                   return (
                     <tr
                       key={item.agentId}
@@ -216,8 +219,7 @@ export const AutoConfigModal: React.FC<AutoConfigModalProps> = ({
                           {item.nextConfig.model}
                         </div>
                         <div className="mt-1 text-[11px] text-slate-400 tabular-nums">
-                          {formatCostLabel(item)}
-                          {ctxLabel ? ` · ${ctxLabel}` : ''}
+                          {formatCostLabel(item)} · {ctxLabel}
                           {item.nextConfig.fallbackModels.length > 0
                             ? ` · ${item.nextConfig.fallbackModels.length} cadangan`
                             : ''}
@@ -242,7 +244,7 @@ export const AutoConfigModal: React.FC<AutoConfigModalProps> = ({
           <div className="space-y-3 md:hidden">
             {plan.items.map((item) => {
               const checked = Boolean(selectedMap[item.agentId]);
-              const ctxLabel = formatContext(item.contextLength);
+              const ctxLabel = formatContext(item.contextLength, item.contextVerified);
               return (
                 <div
                   key={item.agentId}
@@ -284,8 +286,7 @@ export const AutoConfigModal: React.FC<AutoConfigModalProps> = ({
                       </span>
                     </div>
                     <div className="text-slate-400 tabular-nums">
-                      {formatCostLabel(item)}
-                      {ctxLabel ? ` · ${ctxLabel}` : ''}
+                      {formatCostLabel(item)} · {ctxLabel}
                       {item.nextConfig.fallbackModels.length > 0
                         ? ` · ${item.nextConfig.fallbackModels.length} cadangan`
                         : ''}

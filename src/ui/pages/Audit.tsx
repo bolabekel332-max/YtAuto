@@ -4,9 +4,9 @@ import { MAX_AUDIT_VIDEOS } from '../../../shared/constants';
 import type { AuditVideoItem } from '../../../shared/agentInputs';
 import type { OrchestratorOutput, PackagingOutput } from '../../../shared/agentSchemas';
 import type { Platform } from '../../../shared/schemas';
-import { runAgent } from '../../api/client';
 import { label } from '../../config/labels';
 import { PROFILE_OPTIONS } from '../../config/presets';
+import { useAgentTask } from '../../state/agentTaskContext';
 import { useStore } from '../../state/store';
 import { Card } from '../components/Card';
 import { SelectField } from '../components/FormFields';
@@ -14,7 +14,10 @@ import { Tooltip } from '../components/Tooltip';
 import { AgentOutput } from '../renderers/AgentOutput';
 
 export const Audit: React.FC = () => {
-  const { state, dispatch } = useStore();
+  const { state } = useStore();
+  const { tasks, startAuditTask, cancelTask, clearTaskMessages } = useAgentTask();
+  const auditTask = tasks.audit;
+  const loading = auditTask.status === 'running';
 
   const historyItems = useMemo(() => {
     return state.history.slice(0, MAX_AUDIT_VIDEOS).map((entry) => {
@@ -71,10 +74,9 @@ export const Audit: React.FC = () => {
       ? styleProfileId
       : '';
 
-  const [loading, setLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [statusMsg, setStatusMsg] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const errorMsg = localError ?? auditTask.error ?? null;
+  const statusMsg = auditTask.statusMessage ?? null;
   const prevProfilePlatformRef = useRef<Platform>(state.profile.platform ?? 'youtube_shorts');
   const prevDefaultStyleIdRef = useRef<string>(defaultStyleId);
 
@@ -99,12 +101,6 @@ export const Audit: React.FC = () => {
     }
   }, [styleProfileId, effectiveStyleProfileId]);
 
-  useEffect(() => {
-    return () => {
-      abortRef.current?.abort();
-    };
-  }, []);
-
   const includedHistory = historyItems.filter(
     (h) => !excludedHistoryIds.includes(h.id)
   );
@@ -124,13 +120,14 @@ export const Audit: React.FC = () => {
   };
 
   const handleAddManual = () => {
-    setErrorMsg(null);
+    setLocalError(null);
+    clearTaskMessages('audit');
     if (!manualTitle.trim() || !manualSummary.trim()) {
-      setErrorMsg('Isi judul dan ringkasan video manual sebelum menambahkan.');
+      setLocalError('Isi judul dan ringkasan video manual sebelum menambahkan.');
       return;
     }
     if (includedHistory.length + manualItems.length >= MAX_AUDIT_VIDEOS) {
-      setErrorMsg(`Maksimal ${MAX_AUDIT_VIDEOS} video dalam satu kali Audit Konten.`);
+      setLocalError(`Maksimal ${MAX_AUDIT_VIDEOS} video dalam satu kali Audit Konten.`);
       return;
     }
     setManualItems((prev) => [
@@ -147,10 +144,10 @@ export const Audit: React.FC = () => {
   };
 
   const handleRunAudit = async () => {
-    setErrorMsg(null);
-    setStatusMsg(null);
+    setLocalError(null);
+    clearTaskMessages('audit');
     if (combinedVideos.length === 0) {
-      setErrorMsg(
+      setLocalError(
         'Pilih minimal 1 video dari riwayat atau tambahkan entri manual untuk diaudit.'
       );
       return;
@@ -160,36 +157,18 @@ export const Audit: React.FC = () => {
       ? state.styleProfiles.find((sp) => sp.id === effectiveStyleProfileId)
       : undefined;
 
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setLoading(true);
-    try {
-      const result = await runAgent(
-        {
-          agentId: 'compliance',
-          mode: 'audit',
-          input: {
-            videos: combinedVideos,
-            activeStyleReferenceIds: activeStyle?.referenceIds,
-          },
-          profile: state.profile,
-          styleProfile: activeStyle,
-          knowledge: state.knowledge,
-          config: complianceConfig,
-        },
-        controller.signal
-      );
-      dispatch({ type: 'SET_LAST_AUDIT', result });
-    } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        setStatusMsg('Permintaan audit konten dibatalkan oleh pengguna.');
-      } else {
-        setErrorMsg(err instanceof Error ? err.message : 'Gagal menjalankan Audit Konten.');
-      }
-    } finally {
-      abortRef.current = null;
-      setLoading(false);
-    }
+    await startAuditTask({
+      agentId: 'compliance',
+      mode: 'audit',
+      input: {
+        videos: combinedVideos,
+        activeStyleReferenceIds: activeStyle?.referenceIds,
+      },
+      profile: state.profile,
+      styleProfile: activeStyle,
+      knowledge: state.knowledge,
+      config: complianceConfig,
+    });
   };
 
   return (
@@ -381,7 +360,7 @@ export const Audit: React.FC = () => {
               {loading && (
                 <button
                   type="button"
-                  onClick={() => abortRef.current?.abort()}
+                  onClick={() => cancelTask('audit')}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-950/50 px-3 py-2 text-xs font-medium text-rose-200 hover:bg-rose-950/80"
                 >
                   <XCircle className="h-4 w-4" aria-hidden="true" />

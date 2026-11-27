@@ -79,6 +79,10 @@ function mapNousHttpError(
     errorKind = 'authentication_error';
     userMsg =
       'Sesi OAuth atau kunci Nous Portal tidak valid/kedaluwarsa (401). Silakan hubungkan ulang akun Nous Anda.';
+  } else if (status === 402) {
+    errorKind = 'insufficient_balance';
+    userMsg =
+      'Saldo atau kredit Nous Portal tidak mencukupi untuk model ini (402). Gunakan model gratis (:free) atau isi saldo akun Nous Anda.';
   } else if (status === 403) {
     errorKind = 'permission_error';
     userMsg = 'Izin akses ke model Nous Portal ditolak (403). Periksa paket atau hak akses akun Nous Anda.';
@@ -149,16 +153,31 @@ export async function callNousChat(
     }
   }
 
-  const combinedText = req.messages.map((m) => m.content).join('\n\n');
   const bodyMessages: Array<Record<string, unknown>> = [
     { role: 'system', content: req.system },
   ];
 
-  if (userContentParts.length > 0) {
-    userContentParts.push({ type: 'text', text: combinedText });
+  let lastUserIdx = -1;
+  for (let i = req.messages.length - 1; i >= 0; i -= 1) {
+    if (req.messages[i].role === 'user') {
+      lastUserIdx = i;
+      break;
+    }
+  }
+
+  req.messages.forEach((msg, idx) => {
+    if (userContentParts.length > 0 && idx === lastUserIdx) {
+      bodyMessages.push({
+        role: 'user',
+        content: [...userContentParts, { type: 'text', text: msg.content }],
+      });
+    } else {
+      bodyMessages.push({ role: msg.role, content: msg.content });
+    }
+  });
+
+  if (lastUserIdx === -1 && userContentParts.length > 0) {
     bodyMessages.push({ role: 'user', content: userContentParts });
-  } else {
-    bodyMessages.push({ role: 'user', content: combinedText });
   }
 
   const payload: Record<string, unknown> = {

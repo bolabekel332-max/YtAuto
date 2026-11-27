@@ -16,6 +16,7 @@ import type {
   JsonMode,
   ProviderId,
 } from '../../shared/schemas';
+import { evaluateModelPolicy } from '../../shared/modelPolicy';
 import {
   DEFAULT_CUSTOM_MODEL,
   DEFAULT_GEMINI_MODEL,
@@ -33,7 +34,8 @@ export interface CandidateModel {
   model: string;
   displayName: string;
   costClass: ModelCostClass;
-  contextLength: number;
+  contextLength?: number;
+  contextVerified: boolean;
   supportsSearch: boolean;
   supportsVideo: boolean;
   supportsImage: boolean;
@@ -52,6 +54,7 @@ export interface AgentAutoRecommendation {
   changed: boolean;
   costClass: ModelCostClass;
   contextLength?: number;
+  contextVerified: boolean;
   promptPricePerMillion?: number;
   reason: string;
   capabilityNote?: string;
@@ -77,14 +80,14 @@ export const AUTO_CONFIG_TIERS: Array<{
     title: 'Pintar Maksimal',
     subtitle: 'Flagship & penalaran mendalam',
     strategy:
-      'Memprioritaskan model flagship terbaik (termasuk berbayar yang aktif), konteks besar, dan membedakan model Kepatuhan vs Penulis Naskah.',
+      'Memprioritaskan model kelas flagship berdasarkan nama dan harga katalog (termasuk berbayar yang aktif), konteks besar bila tercantum, serta membedakan model Kepatuhan dan Penulis Naskah.',
   },
   {
     id: 'balanced',
     title: 'Menengah',
     subtitle: 'Seimbang kualitas & efisiensi',
     strategy:
-      'Menempatkan model kuat untuk Riset, Naskah, & Kepatuhan, serta model cepat/hemat untuk Packaging, Visual, & Orkestrator.',
+      'Menempatkan model kelas menengah/besar untuk Riset, Naskah, & Kepatuhan, serta model cepat/hemat untuk Packaging, Visual, & Orkestrator.',
   },
   {
     id: 'lite',
@@ -137,40 +140,57 @@ function inferCapabilityClass(item: ProviderModelItem): 1 | 2 | 3 {
 function buildCandidates(
   providers: ProviderStatus[],
   catalogs: Partial<Record<CatalogProviderId, ProviderModelsResponse>>
-): { candidates: CandidateModel[]; activeLiveProviders: ProviderId[] } {
+): {
+  candidates: CandidateModel[];
+  unfilteredCandidates: CandidateModel[];
+  skippedDisallowed: CandidateModel[];
+  activeLiveProviders: ProviderId[];
+} {
   const liveProviders = providers.filter((p) => p.available && p.id !== 'mock');
   const activeLiveProviders = liveProviders.map((p) => p.id);
-  const candidates: CandidateModel[] = [];
+  const rawCandidates: Array<{
+    candidate: CandidateModel;
+    provider: ProviderStatus;
+    freeCatalogIds?: string[];
+  }> = [];
 
   for (const p of liveProviders) {
     if (p.id === 'gemini') {
-      candidates.push({
-        providerId: 'gemini',
-        model: DEFAULT_GEMINI_MODEL,
-        displayName: `Google Gemini (${DEFAULT_GEMINI_MODEL})`,
-        costClass: 'included',
-        contextLength: 1_000_000,
-        supportsSearch: p.capabilities.search,
-        supportsVideo: p.capabilities.video,
-        supportsImage: p.capabilities.image,
-        supportsStructuredOutput: p.capabilities.jsonSchema,
-        capabilityClass: 3,
+      rawCandidates.push({
+        provider: p,
+        candidate: {
+          providerId: 'gemini',
+          model: DEFAULT_GEMINI_MODEL,
+          displayName: `Google Gemini (${DEFAULT_GEMINI_MODEL})`,
+          costClass: 'included',
+          contextLength: undefined,
+          contextVerified: false,
+          supportsSearch: p.capabilities.search,
+          supportsVideo: p.capabilities.video,
+          supportsImage: p.capabilities.image,
+          supportsStructuredOutput: p.capabilities.jsonSchema,
+          capabilityClass: 3,
+        },
       });
       continue;
     }
 
     if (p.id === 'custom') {
-      candidates.push({
-        providerId: 'custom',
-        model: DEFAULT_CUSTOM_MODEL,
-        displayName: `Provider Kustom (${DEFAULT_CUSTOM_MODEL})`,
-        costClass: 'included',
-        contextLength: 32_768,
-        supportsSearch: p.capabilities.search,
-        supportsVideo: p.capabilities.video,
-        supportsImage: p.capabilities.image,
-        supportsStructuredOutput: p.capabilities.jsonSchema,
-        capabilityClass: 2,
+      rawCandidates.push({
+        provider: p,
+        candidate: {
+          providerId: 'custom',
+          model: DEFAULT_CUSTOM_MODEL,
+          displayName: `Provider Kustom (${DEFAULT_CUSTOM_MODEL})`,
+          costClass: 'included',
+          contextLength: undefined,
+          contextVerified: false,
+          supportsSearch: p.capabilities.search,
+          supportsVideo: p.capabilities.video,
+          supportsImage: p.capabilities.image,
+          supportsStructuredOutput: p.capabilities.jsonSchema,
+          capabilityClass: 2,
+        },
       });
       continue;
     }
@@ -183,21 +203,26 @@ function buildCandidates(
     const validCatalogItems = (cat?.models ?? []).filter(
       (m: ProviderModelItem) => MODEL_ID_REGEX.test(m.id) && !NON_CHAT_MODEL_RE.test(m.id)
     );
+    const freeCatalogIds = validCatalogItems.filter((m) => m.isFree).map((m) => m.id);
 
     if (validCatalogItems.length === 0) {
       const defModel = defaultModelForProvider(p.id);
-      candidates.push({
-        providerId: p.id,
-        model: defModel,
-        displayName: `${label(p.id)} (${defModel})`,
-        costClass: defModel.endsWith(':free') || defModel.startsWith('free/') ? 'free' : 'paid',
-        contextLength: 32_768,
-        supportsSearch: p.capabilities.search,
-        supportsVideo: p.capabilities.video,
-        supportsImage: p.capabilities.image && VISION_NAME_RE.test(defModel),
-        supportsStructuredOutput: p.capabilities.jsonSchema,
-        capabilityClass: 2,
-        fromFallbackDefault: true,
+      rawCandidates.push({
+        provider: p,
+        candidate: {
+          providerId: p.id,
+          model: defModel,
+          displayName: `${label(p.id)} (${defModel})`,
+          costClass: defModel.endsWith(':free') || defModel.startsWith('free/') ? 'free' : 'paid',
+          contextLength: undefined,
+          contextVerified: false,
+          supportsSearch: p.capabilities.search,
+          supportsVideo: p.capabilities.video,
+          supportsImage: p.capabilities.image && VISION_NAME_RE.test(defModel),
+          supportsStructuredOutput: p.capabilities.jsonSchema,
+          capabilityClass: 2,
+          fromFallbackDefault: true,
+        },
       });
       continue;
     }
@@ -211,21 +236,45 @@ function buildCandidates(
           : VISION_NAME_RE.test(`${m.id} ${m.name ?? ''}`));
       const supportsVideo =
         p.capabilities.video || Boolean(m.inputModalities?.includes('video'));
+      const hasVerifiedCtx = typeof m.contextLength === 'number' && m.contextLength > 0;
 
-      candidates.push({
-        providerId: p.id,
-        model: m.id,
-        displayName: m.name || m.id,
-        costClass: m.isFree ? 'free' : 'paid',
-        contextLength: m.contextLength ?? 32_768,
-        supportsSearch: p.capabilities.search,
-        supportsVideo,
-        supportsImage,
-        supportsStructuredOutput: m.supportsStructuredOutput ?? p.capabilities.jsonSchema,
-        promptPricePerMillion: m.promptPricePerMillion,
-        completionPricePerMillion: m.completionPricePerMillion,
-        capabilityClass: inferCapabilityClass(m),
+      rawCandidates.push({
+        provider: p,
+        freeCatalogIds,
+        candidate: {
+          providerId: p.id,
+          model: m.id,
+          displayName: m.name || m.id,
+          costClass: m.isFree ? 'free' : 'paid',
+          contextLength: hasVerifiedCtx ? m.contextLength : undefined,
+          contextVerified: hasVerifiedCtx,
+          supportsSearch: p.capabilities.search,
+          supportsVideo,
+          supportsImage,
+          supportsStructuredOutput: m.supportsStructuredOutput ?? p.capabilities.jsonSchema,
+          promptPricePerMillion: m.promptPricePerMillion,
+          completionPricePerMillion: m.completionPricePerMillion,
+          capabilityClass: inferCapabilityClass(m),
+        },
       });
+    }
+  }
+
+  const unfilteredCandidates = rawCandidates.map((entry) => entry.candidate);
+  const candidates: CandidateModel[] = [];
+  const skippedDisallowed: CandidateModel[] = [];
+
+  for (const entry of rawCandidates) {
+    const evalRes = evaluateModelPolicy(
+      entry.provider.modelPolicy,
+      entry.candidate.providerId,
+      entry.candidate.model,
+      entry.freeCatalogIds
+    );
+    if (evalRes.allowed) {
+      candidates.push(entry.candidate);
+    } else {
+      skippedDisallowed.push(entry.candidate);
     }
   }
 
@@ -235,7 +284,8 @@ function buildCandidates(
       model: DEFAULT_MOCK_MODEL,
       displayName: `Simulasi Mock (${DEFAULT_MOCK_MODEL})`,
       costClass: 'mock',
-      contextLength: 32_768,
+      contextLength: undefined,
+      contextVerified: false,
       supportsSearch: false,
       supportsVideo: false,
       supportsImage: false,
@@ -244,13 +294,13 @@ function buildCandidates(
     });
   }
 
-  return { candidates, activeLiveProviders };
+  return { candidates, unfilteredCandidates, skippedDisallowed, activeLiveProviders };
 }
 
 const TOP_TIER_NAME_RE =
   /(claude-4|claude-3\.7|claude-3-7|claude-opus-4|claude-fable|opus|sonnet-4|gpt-6|gpt-5|gpt-4\.1(?!-mini|-nano)|o3\b|o4-mini|gemini-4|gemini-3\.1-pro|gemini-2\.5-pro|deepseek-r1|deepseek-v4-pro|qwen3-max|qwen4-max|qwen-3\.8-max|kimi-k3\.1-pro|nemotron.*ultra|hermes-4-405b|llama-3\.1-405b)/i;
 
-const PROVEN_FAMILY_RE =
+const KNOWN_FAMILY_RE =
   /(anthropic\/claude|openai\/gpt-|openai\/o[134]|google\/gemini|deepseek\/|qwen\/|meta-llama\/llama-3\.[13]|meta-llama\/llama-4|mistralai\/|nousresearch\/|perplexity\/sonar|^(free\/)?(gpt-|claude-|gemini-|deepseek-|qwen-|kimi-|glm-))/i;
 
 function computeRoleAffinityBonus(
@@ -260,8 +310,8 @@ function computeRoleAffinityBonus(
   const idAndName = `${candidate.model} ${candidate.displayName}`;
   let bonus = 0;
 
-  // Model keluarga yang terbukti matang & stabil untuk produksi
-  if (PROVEN_FAMILY_RE.test(idAndName) || candidate.providerId === 'gemini') {
+  // Model keluarga populer berdasarkan prefix/nama model
+  if (KNOWN_FAMILY_RE.test(idAndName) || candidate.providerId === 'gemini') {
     bonus += 65;
   }
   if (TOP_TIER_NAME_RE.test(idAndName)) {
@@ -344,8 +394,9 @@ function scoreCandidateForAgent(params: {
     score += candidate.capabilityClass * 160;
     if (candidate.costClass === 'paid') score += 90;
     if (candidate.costClass === 'included') score += 85;
-    if (candidate.contextLength >= 128_000) score += 70;
-    else if (candidate.contextLength >= 64_000) score += 35;
+    const ctxLen = candidate.contextLength ?? 0;
+    if (ctxLen >= 128_000) score += 70;
+    else if (ctxLen >= 64_000) score += 35;
     // Pada Pintar Maksimal, hindari model nano/mini untuk peran berat jika flagship tersedia
     if (isHeavyCreativeOrCritical && candidate.capabilityClass === 1) {
       score -= 140;
@@ -414,7 +465,7 @@ function buildReasonText(params: {
     if (chosen.supportsSearch) {
       parts.push('Mendukung pencarian web server dua langkah');
     } else {
-      parts.push('Dipilih dari model aktif terbaik');
+      parts.push('Dipilih dari daftar model aktif berdasarkan kapabilitas & kelas harga');
       capabilityNote =
         'Provider terpilih belum mendukung pencarian web langsung; aktifkan Gemini, OpenRouter, atau APInex jika butuh grounding live.';
     }
@@ -435,28 +486,28 @@ function buildReasonText(params: {
       avoidSameAs &&
       (chosen.providerId !== avoidSameAs.providerId || chosen.model !== avoidSameAs.model);
     if (distinctFromWriter) {
-      parts.push('Dipilih berbeda dari Penulis Naskah agar audit lebih objektif');
+      parts.push('Dipilih berbeda dari Penulis Naskah untuk pemisahan peran pemeriksa');
     } else {
-      parts.push('Fokus akurasi kepatuhan & verifikasi klaim');
+      parts.push('Mendukung format JSON terstruktur untuk pemeriksaan kepatuhan & daftar klaim');
     }
   } else if (agentId === 'scriptwriter') {
     parts.push(
       tier === 'max'
-        ? 'Kapasitas penalaran & penulisan kreatif tertinggi di katalog aktif'
+        ? 'Dipilih dari kelas flagship/berkonteks besar berdasarkan nama & harga katalog aktif'
         : tier === 'balanced'
-        ? 'Kualitas naskah kuat dengan efisiensi biaya seimbang'
+        ? 'Menyeimbangkan kelas menengah/besar dan harga katalog untuk penyusunan naskah'
         : 'Efisien & respons cepat untuk penyusunan naskah rutin'
     );
   } else if (agentId === 'packaging' || agentId === 'orchestrator') {
     parts.push(
       tier === 'max'
-        ? 'Ketepatan format JSON tinggi untuk QC & packaging'
+        ? 'Mendukung format keluaran JSON terstruktur untuk packaging & penggabungan hasil'
         : 'Cepat dan hemat token untuk tugas terstruktur'
     );
   } else if (agentId === 'visual') {
     parts.push('Mendukung konteks arahan visual & storyboard bertahap');
   } else if (agentId === 'analyst') {
-    parts.push('Presisi tinggi untuk membaca tabel metrik & merancang test plan');
+    parts.push('Mendukung keluaran JSON terstruktur untuk merangkum tabel metrik & rencana uji');
   }
 
   if (chosen.costClass === 'free') {
@@ -502,21 +553,15 @@ function buildConfigForCandidate(
   };
 }
 
-export function buildAutoConfigPlan(params: {
-  tier: AutoConfigTier;
-  currentConfigs: AgentModelConfig[];
-  providers: ProviderStatus[];
-  catalogs: Partial<Record<CatalogProviderId, ProviderModelsResponse>>;
-}): AutoConfigPlan {
-  const { tier, currentConfigs, providers, catalogs } = params;
-  const { candidates, activeLiveProviders } = buildCandidates(providers, catalogs);
-  const currentMap = new Map(currentConfigs.map((c) => [c.agentId, c]));
-
+function resolvePicksForPool(
+  pool: CandidateModel[],
+  tier: AutoConfigTier
+): Map<AgentId, { chosen: CandidateModel; fallbacks: string[] }> {
   const pickBest = (
     agentId: AgentId,
     avoidSameAs?: { providerId: ProviderId; model: string }
   ): { chosen: CandidateModel; fallbacks: string[] } => {
-    const scored = candidates
+    const scored = pool
       .map((candidate) => ({
         candidate,
         score: scoreCandidateForAgent({ agentId, tier, candidate, avoidSameAs }),
@@ -568,6 +613,27 @@ export function buildAutoConfigPlan(params: {
     pickedByAgent.set(agentId, pickBest(agentId, avoid));
   }
 
+  return pickedByAgent;
+}
+
+export function buildAutoConfigPlan(params: {
+  tier: AutoConfigTier;
+  currentConfigs: AgentModelConfig[];
+  providers: ProviderStatus[];
+  catalogs: Partial<Record<CatalogProviderId, ProviderModelsResponse>>;
+}): AutoConfigPlan {
+  const { tier, currentConfigs, providers, catalogs } = params;
+  const { candidates, unfilteredCandidates, skippedDisallowed, activeLiveProviders } =
+    buildCandidates(providers, catalogs);
+  const currentMap = new Map(currentConfigs.map((c) => [c.agentId, c]));
+
+  const pickedByAgent = resolvePicksForPool(candidates, tier);
+  const scriptPick = pickedByAgent.get('scriptwriter')!;
+  const scriptIdentity = {
+    providerId: scriptPick.chosen.providerId,
+    model: scriptPick.chosen.model,
+  };
+
   const items: AgentAutoRecommendation[] = AGENT_IDS.map((agentId) => {
     const previousConfig = currentMap.get(agentId) ?? currentConfigs[0];
     const { chosen, fallbacks } = pickedByAgent.get(agentId)!;
@@ -594,6 +660,7 @@ export function buildAutoConfigPlan(params: {
       changed,
       costClass: chosen.costClass,
       contextLength: chosen.contextLength,
+      contextVerified: chosen.contextVerified,
       promptPricePerMillion: chosen.promptPricePerMillion,
       reason,
       capabilityNote,
@@ -601,15 +668,40 @@ export function buildAutoConfigPlan(params: {
   });
 
   const warnings: string[] = [];
-  if (activeLiveProviders.length === 0) {
+  if (skippedDisallowed.length > 0) {
+    const unfilteredPicks =
+      unfilteredCandidates.length > 0 ? resolvePicksForPool(unfilteredCandidates, tier) : null;
+    const policyChangedRecommendation = unfilteredPicks
+      ? AGENT_IDS.some((agentId) => {
+          const filtered = pickedByAgent.get(agentId)!;
+          const unfiltered = unfilteredPicks.get(agentId)!;
+          return (
+            filtered.chosen.providerId !== unfiltered.chosen.providerId ||
+            filtered.chosen.model !== unfiltered.chosen.model ||
+            JSON.stringify(filtered.fallbacks) !== JSON.stringify(unfiltered.fallbacks)
+          );
+        })
+      : true;
+
+    if (policyChangedRecommendation) {
+      const skippedPaidCount = skippedDisallowed.filter((c) => c.costClass === 'paid').length;
+      if (skippedPaidCount > 0) {
+        warnings.push(`${skippedPaidCount} model berbayar dilewati karena pembatas server.`);
+      } else {
+        warnings.push(`${skippedDisallowed.length} model dilewati karena pembatas server.`);
+      }
+    }
+  }
+
+  if (activeLiveProviders.length === 0 || candidates.every((c) => c.providerId === 'mock')) {
     warnings.push(
-      'Tidak ada provider live yang aktif di server; semua agent diarahkan ke Simulasi Mock.'
+      'Tidak ada provider live yang aktif/diizinkan pembatas server; semua agent diarahkan ke Simulasi Mock.'
     );
   } else {
     const hasPaidCandidates = candidates.some((c) => c.costClass === 'paid');
     if (tier === 'max' && !hasPaidCandidates && !activeLiveProviders.includes('gemini')) {
       warnings.push(
-        'Hanya model gratis yang terdeteksi di katalog aktif; Pintar Maksimal memilih model terbaik dari daftar yang tersedia.'
+        'Hanya model gratis yang terdeteksi di katalog aktif; Pintar Maksimal memilih dari daftar model gratis yang tersedia.'
       );
     }
     if (!activeLiveProviders.includes('gemini')) {
